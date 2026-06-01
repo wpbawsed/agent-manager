@@ -1,11 +1,20 @@
-# Agent Manager — 技術規格文件（v3）
+# Agent Manager — 技術規格文件（v4）
 
-> 最後更新：2026-05-28
+> 最後更新：2026-06-02
 > 此文件反映當前 source code 的實際架構，非設計草稿。
 
 ---
 
 ## 系統架構總覽
+
+### 核心概念
+
+**Broker → Router（Routing Rule）→ Queue → Agent**
+
+- **Broker**：對外 Webhook 接收器（Slack / Jira / GitHub / LINE / Railway / Notion）
+- **Routing Rule**：SNS filter-style 路由規則，連結 Broker → Queue，可選 `eventTypes` allowlist
+- **Queue**：獨立 BullMQ Queue entity（類 SQS），與 Broker/Agent 解耦
+- **Agent**：Generic worker，1:1 消費一條 Queue，只需 instruction + queue 即可建立
 
 ```
 外部世界（Slack / Jira / Notion / Line / Railway / GitHub）
@@ -20,19 +29,20 @@ Cloudflare Tunnel（對外 webhook URL）
 ┌───────────────────────────────────────────────────────┐
 │  API Server（Fastify, port 8080）                      │
 │  POST /:tenant/:sourceType/:sourceId                   │
-│   → HMAC 驗證 → 標準化 Event → BullMQ Queue           │
+│   → HMAC 驗證 → 標準化 Event                          │
+│   → 查 routing_rules（brokerId → queueId）             │
+│   → eventTypes 比對（allowlist）                       │
+│   → push job 到 BullMQ Queue                          │
 │                                                        │
-│  REST API（Agent / Broker / Routing / Logs / Admin）   │
+│  REST API（Agent / Queue / Broker / Routing / Logs）   │
 └──────────┬───────────────────────┬────────────────────┘
            │                       │
            ▼                       ▼
       PostgreSQL               Redis + BullMQ
-      (source of truth)        Queue: broker-{agentId}
+      (source of truth)        Queue（獨立命名，1:1 per Agent）
            │                       │
            │                       ▼
-           │                Agent Process（兩種模式）
-           │                ├── Mode 1: claude --print
-           │                │   (one-shot per job, stdin/stdout)
+           │                Agent Process
            │                └── Mode 2: claude --dangerously-skip-permissions
            │                    (persistent, MCP channel via .mcp.json)
            │                    channel JS: packages/channels/{type}.js
@@ -99,32 +109,23 @@ POST /:tenant/:sourceType/:sourceId
 4. 確認 broker.status = 'active'
         │ inactive → 回 403
         ▼
-5. 查 routing_rules WHERE brokerId，JOIN agents 取得 queueName + replyTarget
+5. 查 routing_rules WHERE brokerId，JOIN queues 取得 queueName + replyTarget
         │ 無 rules → 回 200 { ok: true, routed: 0 }
         ▼
-6. 條件比對（matchConditions）
+6. eventTypes 比對（allowlist）
+        │ routing_rule.eventTypes = null → 全部通過（catch-all）
+        │ routing_rule.eventTypes = ["issue_created"] → 只通過 eventType 相符的 event
         ▼
-7. 對每個匹配的 agent，組裝 job：
+7. 對每個匹配的 queue，組裝 job：
         │ replyTarget 有值 → 覆蓋 event.replyTo（來源 ≠ 回覆目標）
         │ replyTarget 為 null → 保留 event.replyTo（原路回覆）
         ▼
-8. push job 到 BullMQ queue
+8. push job 到 BullMQ queue（queue.name）
         ▼
 9. 寫 webhook_events audit log（fire-and-forget）
         ▼
 10. 回 200 { ok: true, eventId, routed, errors }
 ```
-
-### Condition 比對運算子
-
-| op | 說明 |
-|---|---|
-| `eq` | payload[field] === value |
-| `neq` | payload[field] !== value |
-| `in` | value.includes(payload[field]) |
-| `includes` | payload[field].includes(value) |
-
-空 / null conditions = catch-all（全部通過）
 
 ---
 
@@ -151,6 +152,7 @@ POST /:tenant/:sourceType/:sourceId
 | 0001 | `0001_add_user_subdomain.sql` | users 加 subdomain 欄位 |
 | 0002 | `0002_add_webhook_events.sql` | webhook_events audit log 表 |
 | 0003 | `0003_add_routing_rule_reply_target.sql` | routing_rules 加 reply_target 欄位 |
+| 0004 | `0004_new_queue_architecture.sql` | 新增 queues 表；agents 加 queueId；routing_rules 改為 queueId + eventTypes（移除 agentId / conditions） |
 
 ### users
 
@@ -165,26 +167,37 @@ POST /:tenant/:sourceType/:sourceId
 }
 ```
 
-### agents
+### queues（v4 新增）
+
+獨立 BullMQ Queue entity。Broker 透過 routing_rule 把 event 路由進 Queue；Agent 1:1 消費。
 
 ```typescript
 {
-  id:           text  PK
-  ownerId:      text  FK → users.id
-  brokerId:     text  nullable            // 舊欄位，目前路由走 routing_rules
-  name:         text  NOT NULL
-  description:  text
-  instruction:  text                      // system prompt（Mode 1 用）
-  skills:       text                      // JSON array
-  mcpConfig:    text                      // JSON: MCP server 設定列表
-  runtimeType:  text  DEFAULT 'custom'    // custom | （未來 claude-code）
-  runtimeCmd:   text                      // 啟動指令，由 Node Agent spawn
-  apiToken:     text  UNIQUE NOT NULL     // 產生時自動建立
-  status:       text  DEFAULT 'stopped'   // stopped | running | error
-  queueName:    text                      // BullMQ queue name，e.g. broker-{agentId}
-  variables:    text                      // JSON: {key: value} 執行時環境變數
-  createdAt:    bigint
-  updatedAt:    bigint
+  id:          text  PK
+  ownerId:     text  FK → users.id
+  name:        text  NOT NULL            // BullMQ queue name，同一 owner 下唯一
+  description: text
+  createdAt:   bigint
+}
+```
+
+### agents
+
+Generic worker。建立時只需選 Queue + 填 instruction，其餘設定均在 CLAUDE.md / .mcp.json 中管理。
+
+```typescript
+{
+  id:          text  PK
+  ownerId:     text  FK → users.id
+  name:        text  NOT NULL
+  description: text
+  instruction: text                      // system prompt
+  queueId:     text  nullable  FK → queues.id   // 1:1，可晚於建立時設定
+  runtimeCmd:  text                      // 啟動指令，由 Node Agent spawn
+  apiToken:    text  UNIQUE NOT NULL     // 建立時自動產生
+  status:      text  DEFAULT 'stopped'   // stopped | running | error
+  createdAt:   bigint
+  updatedAt:   bigint
 }
 ```
 
@@ -205,17 +218,19 @@ POST /:tenant/:sourceType/:sourceId
 }
 ```
 
-### routing_rules
+### routing_rules（v4 更新）
+
+連結 Broker → Queue，支援 `eventTypes` allowlist（SNS filter style）。
 
 ```typescript
 {
   id:          text  PK
   ownerId:     text  FK → users.id
+  name:        text
   brokerId:    text  FK → brokers.id
-  agentId:     text  FK → agents.id
-  conditions:  text                      // JSON: [{field, op, value}]，null = catch-all
-  replyTarget: text  nullable            // 覆蓋回覆目標 URI，null = 使用 event.replyTo
-                                         // 範例：jira 事件 → 回覆到 slack://C1234567
+  queueId:     text  FK → queues.id       // v4：改為指向 Queue（不再是 agentId）
+  eventTypes:  text                        // JSON string[]：allowlist，null = catch-all
+  replyTarget: text  nullable             // 覆蓋回覆目標 URI，null = 使用 event.replyTo
   createdAt:   bigint
 }
 ```
@@ -228,9 +243,9 @@ POST /:tenant/:sourceType/:sourceId
   brokerId:       text  NOT NULL         // 無 FK（broker 刪除後保留 log）
   ownerId:        text  NOT NULL
   sourceType:     text  NOT NULL
-  eventType:      text                   // message | url_verification | etc.
+  eventType:      text                   // message | issue.updated | url_verification 等
   status:         text  NOT NULL         // challenge | queued | no_rules | inactive | error | rejected
-  routed:         integer DEFAULT 0      // 成功 enqueue 的 agent 數量
+  routed:         integer DEFAULT 0      // 成功 enqueue 的 queue 數量
   errorMessage:   text
   payloadSummary: text                   // JSON 截斷至 2KB
   createdAt:      bigint
@@ -255,25 +270,7 @@ POST /:tenant/:sourceType/:sourceId
 
 ## Agent 執行模式
 
-### Mode 1：claude --print（一次性）
-
-每個 BullMQ job 獨立 spawn 一個 `claude --print` process。
-
-```
-BullMQ job 進來
-  → broker/index.js Worker
-  → spawn("claude", ["--print", "--output-format", "text"])
-  → stdin 寫入 prompt（SYSTEM_PROMPT + event.payload.text）
-  → 等待 process 結束，讀取 stdout
-  → dispatchReply（回 Slack / Jira / Notion 等）
-  → job 完成
-```
-
-**特性：**
-- 無狀態，每次全新 session
-- 簡單可靠，適合單一問答
-- 認證走 `~/.claude.json`（不需 ANTHROPIC_API_KEY）
-- 範例：`agents/slack-reply-agent-*`
+目前只支援 **Mode 2（MCP Channel）**。Mode 1 已移除。
 
 ### Mode 2：MCP Channel（持久互動 session）
 
@@ -482,7 +479,7 @@ GET  /api/auth/me
 
 ```
 GET    /api/agents
-POST   /api/agents          { name, description?, instruction?, brokerId?, runtimeCmd? }
+POST   /api/agents          { name, description?, instruction?, queueId?, runtimeCmd? }
 GET    /api/agents/:id      → 含 liveStatus（from Node Agent，best-effort）
 PATCH  /api/agents/:id
 DELETE /api/agents/:id
@@ -490,6 +487,16 @@ POST   /api/agents/:id/start
 POST   /api/agents/:id/stop
 POST   /api/agents/:id/rotate-token
 GET    /api/agents/:id/node-status
+```
+
+### Queue
+
+```
+GET    /api/queues
+POST   /api/queues          { name, description? }
+GET    /api/queues/:id
+PATCH  /api/queues/:id
+DELETE /api/queues/:id
 ```
 
 ### Agent Files
@@ -516,7 +523,7 @@ POST   /api/brokers/:id/deactivate
 
 ```
 GET    /api/routing
-POST   /api/routing         { brokerId, agentId, conditions?, replyTarget? }
+POST   /api/routing         { brokerId, queueId, eventTypes?, replyTarget? }
 GET    /api/routing/:id
 DELETE /api/routing/:id
 ```
@@ -563,10 +570,11 @@ POST /:tenant/:sourceType/:sourceId
 | 路徑 | 說明 |
 |---|---|
 | `/login` `/register` | 認證頁 |
-| `/agents` | Agent 列表，啟動/停止，狀態 badge |
-| `/agents/:id` | Agent 詳情，log SSE，設定編輯 |
+| `/agents` | Agent 列表，Queue 名稱、狀態 badge，啟動/停止/詳情 |
+| `/agents/:id` | Agent 詳情：Overview（編輯）/ Instruction（CLAUDE.md 編輯）/ Logs（SSE）/ Docs / Skills / Variables / Repos / MCP Config |
+| `/queues` | Queue 列表，建立/刪除 |
 | `/brokers` | Broker 列表，類型 icon，CRUD，webhook URL 複製 |
-| `/routing` | `@vue-flow/core` 視覺化連線圖，Broker nodes ←→ Agent nodes |
+| `/routing` | `@vue-flow/core` 視覺化連線圖：Broker → Queue → Agent；eventTypes 多選設定 |
 | `/logs` | Webhook audit log + Agent 執行 log，篩選 |
 | `/playground` | 與 Agent 對話（SSE 串流） |
 | `/admin` | 使用者管理、系統統計 |
@@ -587,7 +595,8 @@ agent-manager/
 │   │       │       ├── 0000_unusual_ender_wiggin.sql
 │   │       │       ├── 0001_add_user_subdomain.sql
 │   │       │       ├── 0002_add_webhook_events.sql
-│   │       │       └── 0003_add_routing_rule_reply_target.sql
+│   │       │       ├── 0003_add_routing_rule_reply_target.sql
+│   │       │       └── 0004_new_queue_architecture.sql
 │   │       ├── plugins/
 │   │       │   ├── auth.ts
 │   │       │   ├── db.ts
@@ -598,6 +607,7 @@ agent-manager/
 │   │       │   ├── agents.ts
 │   │       │   ├── agent-files.ts
 │   │       │   ├── brokers.ts
+│   │       │   ├── queues.ts
 │   │       │   ├── routing.ts
 │   │       │   ├── logs.ts
 │   │       │   ├── playground.ts
@@ -607,6 +617,7 @@ agent-manager/
 │   │       │   ├── agents.ts
 │   │       │   ├── auth.ts
 │   │       │   ├── brokers.ts
+│   │       │   ├── queues.ts
 │   │       │   └── routing.ts
 │   │       └── normalizers/
 │   │           ├── index.ts
@@ -629,20 +640,29 @@ agent-manager/
 │   └── ui/                    # Vue 3（port 3000）
 │       └── src/
 │           ├── pages/
+│           │   ├── AgentsPage.vue
+│           │   ├── AgentDetailPage.vue
+│           │   ├── QueuesPage.vue
+│           │   ├── BrokersPage.vue
+│           │   ├── RoutingPage.vue
+│           │   ├── LogsPage.vue
+│           │   ├── PlaygroundPage.vue
+│           │   ├── AdminPage.vue
+│           │   ├── LoginPage.vue
+│           │   └── RegisterPage.vue
 │           ├── components/
-│           ├── stores/        # Pinia
+│           ├── stores/        # Pinia（auth / agents / queues / brokers / routing / logs）
 │           ├── api/
 │           └── router/
 ├── agents/                    # 實際 Agent 實例（不追蹤 .mcp.json 及 .env）
-│   ├── jira-claude-cli-agent-{id}/    # Mode 2，使用 channels/jira.js
-│   ├── notion-claude-cli-agent-{id}/  # Mode 2，使用 channels/notion.js
-│   ├── railway-event-agent-{id}/      # Mode 2，使用 channels/railway.js
-│   ├── line-group-agent-{id}/         # Mode 2，使用 channels/line.js
-│   └── slack-reply-agent-{id}/        # Mode 1，claude --print
+│   └── {agent-id}/
+│       ├── CLAUDE.md          # system prompt + 操作說明
+│       └── .mcp.json          # MCP server 設定（指向 packages/channels/xxx.js）
 ├── docker-compose.yml
 └── docs/
     ├── SPEC.md                # 本文件
     ├── REQUIREMENTS.md
+    ├── ui-redesign.html       # UI 設計規格（同步於 v4 架構）
     └── agent-broker-system-design.md
 ```
 
