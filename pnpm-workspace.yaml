@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+  - "workers/*"
+allowBuilds:
+  better-sqlite3: true
+  es5-ext: false
+  esbuild: true
+  msgpackr-extract: set this to true or false
+  sharp: false
+  vue-demi: true
+  workerd: false

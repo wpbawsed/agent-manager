@@ -1,0 +1,172 @@
+import type { FastifyInstance } from "fastify";
+import * as http from "node:http";
+import {
+  createAgent,
+  listAgents,
+  getAgent,
+  updateAgent,
+  deleteAgent,
+  startAgent,
+  stopAgent,
+  getAgentNodeStatus,
+} from "../services/agents.js";
+
+const NODE_AGENT_URL = process.env.NODE_AGENT_URL || "http://127.0.0.1:9090";
+
+export default async function agentsRoutes(app: FastifyInstance) {
+  // POST /api/agents — Create agent
+  app.post<{
+    Body: {
+      name: string;
+      description?: string;
+      instruction?: string;
+      queueId?: string;
+      runtimeCmd?: string;
+    };
+  }>(
+    "/",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["name"],
+          properties: {
+            name:        { type: "string", minLength: 1 },
+            description: { type: "string" },
+            instruction: { type: "string" },
+            queueId:     { type: "string" },
+            runtimeCmd:  { type: "string" },
+          },
+        },
+      },
+      preHandler: [app.authenticate],
+    },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const agent = await createAgent(app.db, {
+        ...req.body,
+        ownerId: user.sub,
+      });
+      return reply.code(201).send(agent);
+    },
+  );
+
+  // GET /api/agents — List agents
+  app.get("/", { preHandler: [app.authenticate] }, async (req) => {
+    const user = req.user as { sub: string };
+    return listAgents(app.db, user.sub);
+  });
+
+  // GET /api/agents/:id — Get single agent
+  app.get<{ Params: { id: string } }>(
+    "/:id",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const agent = await getAgent(app.db, req.params.id, user.sub);
+      if (!agent) return reply.code(404).send({ error: "Agent not found" });
+
+      // Enrich with live node-agent status (optional, best-effort)
+      try {
+        const live = await getAgentNodeStatus(req.params.id);
+        return { ...agent, liveStatus: live };
+      } catch {
+        return agent;
+      }
+    },
+  );
+
+  // PATCH /api/agents/:id — Update agent
+  app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
+    "/:id",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const agent = await updateAgent(
+        app.db,
+        req.params.id,
+        user.sub,
+        req.body as Parameters<typeof updateAgent>[3],
+      );
+      if (!agent) return reply.code(404).send({ error: "Agent not found" });
+      return agent;
+    },
+  );
+
+  // DELETE /api/agents/:id — Delete agent
+  app.delete<{ Params: { id: string } }>(
+    "/:id",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const ok = await deleteAgent(app.db, req.params.id, user.sub);
+      if (!ok) return reply.code(404).send({ error: "Agent not found" });
+      return reply.code(204).send();
+    },
+  );
+
+  // POST /api/agents/:id/start — Start agent process
+  app.post<{ Params: { id: string } }>(
+    "/:id/start",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const result = await startAgent(app.db, req.params.id, user.sub);
+      if (!result.ok) return reply.code(400).send({ error: result.error });
+      return result;
+    },
+  );
+
+  // POST /api/agents/:id/stop — Stop agent process
+  app.post<{ Params: { id: string } }>(
+    "/:id/stop",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const result = await stopAgent(app.db, req.params.id, user.sub);
+      if (!result.ok) return reply.code(400).send({ error: result.error });
+      return result;
+    },
+  );
+
+  // GET /api/agents/:id/logs/stream — SSE proxy to Node Agent
+  app.get<{ Params: { id: string } }>(
+    "/:id/logs/stream",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const agent = await getAgent(app.db, req.params.id, user.sub);
+      if (!agent) return reply.code(404).send({ error: "Agent not found" });
+
+      const reqOrigin = req.headers.origin || "";
+      reply.raw.setHeader("Content-Type", "text/event-stream");
+      reply.raw.setHeader("Cache-Control", "no-cache");
+      reply.raw.setHeader("Connection", "keep-alive");
+      if (reqOrigin) {
+        reply.raw.setHeader("Access-Control-Allow-Origin", reqOrigin);
+        reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
+      }
+      reply.hijack();
+
+      // Use node:http directly to avoid undici's default 5-minute body timeout
+      // which crashes the process when an SSE stream stays open longer.
+      const url = new URL(
+        `${NODE_AGENT_URL}/agents/${req.params.id}/logs/stream`,
+      );
+      const proxyReq = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname,
+          method: "GET",
+        },
+        (proxyRes) => {
+          proxyRes.pipe(reply.raw, { end: true });
+        },
+      );
+      proxyReq.on("error", () => reply.raw.end());
+      req.raw.on("close", () => proxyReq.destroy());
+      proxyReq.end();
+    },
+  );
+}

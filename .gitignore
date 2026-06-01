@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+.dist/
+build/
+*.tsbuildinfo
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+
+# Terraform secrets
+infra/terraform/.terraform/
+infra/terraform/.terraform.lock.hcl
+infra/terraform/terraform.tfstate
+infra/terraform/terraform.tfstate.backup
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfplan
+
+# Agents 資料夾整個不追蹤（含 secrets、手動管理）
+agents/
+
+# MCP 設定含 secrets，不追蹤
+**/.mcp.json
+
+# Claude local settings
+**/.claude/settings.local.json
+
+# Wrangler secrets / generated
+.wrangler/
+wrangler.toml.local
+
+# SQLite local DB
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Local data directories
+packages/*/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+
+# JWT / token files
+*.token
+*.jwt
+~/.config/agent-manager/

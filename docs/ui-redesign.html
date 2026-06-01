@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Manager — UI Redesign</title>
+<style>
+  :root {
+    --bg:        #0d0d0d;
+    --surface:   #141414;
+    --surface2:  #1c1c1c;
+    --border:    #2a2a2a;
+    --border2:   #333;
+    --text:      #e8e8e8;
+    --text2:     #888;
+    --text3:     #555;
+    --accent:    #6ee7b7;    /* emerald */
+    --accent-bg: rgba(110,231,183,.08);
+    --red:       #f87171;
+    --red-bg:    rgba(248,113,113,.1);
+    --yellow:    #fbbf24;
+    --yellow-bg: rgba(251,191,36,.08);
+    --blue:      #60a5fa;
+    --blue-bg:   rgba(96,165,250,.08);
+    --radius:    8px;
+    --sidebar-w: 220px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, 'Inter', sans-serif; font-size: 14px; line-height: 1.5; display: flex; min-height: 100vh; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+  }
+  .sidebar-logo {
+    padding: 20px 16px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .logo-icon {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; color: #0d0d0d;
+  }
+  .logo-text { font-size: 15px; font-weight: 600; letter-spacing: -.3px; }
+  .logo-sub  { font-size: 11px; color: var(--text2); }
+
+  .nav { padding: 12px 8px; flex: 1; }
+  .nav-section { margin-bottom: 20px; }
+  .nav-label { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text3); padding: 0 8px 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 8px; border-radius: var(--radius);
+    cursor: pointer; color: var(--text2); font-size: 13.5px;
+    transition: all .15s;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+  .nav-item .icon { font-size: 15px; width: 18px; text-align: center; }
+  .nav-badge {
+    margin-left: auto; background: var(--surface2);
+    border: 1px solid var(--border2);
+    font-size: 10px; padding: 1px 6px; border-radius: 20px; color: var(--text2);
+  }
+
+  .sidebar-footer {
+    padding: 12px 8px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .user-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--radius); cursor: pointer; }
+  .user-row:hover { background: var(--surface2); }
+  .avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg,#6ee7b7,#60a5fa); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #0d0d0d; }
+  .user-info { flex: 1; overflow: hidden; }
+  .user-email { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .user-role  { font-size: 10px; color: var(--text3); }
+
+  /* ── Main ── */
+  .main { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; }
+
+  .topbar {
+    height: 52px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--bg);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .page-title { font-size: 15px; font-weight: 600; }
+  .topbar-actions { display: flex; gap: 8px; align-items: center; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 6px 12px; border-radius: var(--radius);
+    font-size: 13px; font-weight: 500; cursor: pointer; border: none;
+    transition: all .15s;
+  }
+  .btn-primary { background: var(--accent); color: #0d0d0d; }
+  .btn-primary:hover { opacity: .9; }
+  .btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
+  .btn-ghost:hover { background: var(--surface2); color: var(--text); }
+  .btn-danger { background: var(--red-bg); color: var(--red); border: 1px solid rgba(248,113,113,.2); }
+  .btn-sm { padding: 4px 9px; font-size: 12px; }
+
+  .content { padding: 24px; flex: 1; }
+
+  /* ── Page selector ── */
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ── Stats row ── */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+  }
+  .stat-label { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+  .stat-value { font-size: 24px; font-weight: 700; letter-spacing: -.5px; }
+  .stat-value.green { color: var(--accent); }
+  .stat-value.yellow { color: var(--yellow); }
+  .stat-value.red { color: var(--red); }
+  .stat-sub { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+  /* ── Table ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title { font-size: 13.5px; font-weight: 600; }
+  .card-sub { font-size: 12px; color: var(--text2); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text3); padding: 10px 20px; text-align: left; border-bottom: 1px solid var(--border); }
+  td { padding: 13px 20px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+
+  /* ── Status badge ── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px; border-radius: 20px;
+    font-size: 11px; font-weight: 500;
+  }
+  .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; }
+  .badge.running { background: rgba(110,231,183,.1); color: var(--accent); }
+  .badge.running::before { background: var(--accent); box-shadow: 0 0 0 2px rgba(110,231,183,.3); }
+  .badge.stopped { background: var(--surface2); color: var(--text2); }
+  .badge.stopped::before { background: var(--text3); }
+  .badge.error   { background: var(--red-bg); color: var(--red); }
+  .badge.error::before { background: var(--red); }
+  .badge.active  { background: rgba(96,165,250,.1); color: var(--blue); }
+  .badge.active::before { background: var(--blue); }
+  .badge.inactive{ background: var(--surface2); color: var(--text2); }
+  .badge.inactive::before { background: var(--text3); }
+
+  /* ── Type chip ── */
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 500;
+    background: var(--surface2); border: 1px solid var(--border2); color: var(--text2);
+  }
+  .chip.jira    { border-color: rgba(96,165,250,.3); color: var(--blue); background: var(--blue-bg); }
+  .chip.notion  { border-color: rgba(255,255,255,.15); color: #e8e8e8; background: rgba(255,255,255,.05); }
+  .chip.slack   { border-color: rgba(224,178,255,.3); color: #c084fc; background: rgba(192,132,252,.08); }
+  .chip.line    { border-color: rgba(110,231,183,.3); color: var(--accent); background: var(--accent-bg); }
+  .chip.railway { border-color: rgba(251,191,36,.3); color: var(--yellow); background: var(--yellow-bg); }
+  .chip.github  { border-color: rgba(232,232,232,.2); color: var(--text); background: rgba(232,232,232,.05); }
+
+  /* ── Action group ── */
+  .action-group { display: flex; gap: 6px; }
+
+  /* ── Agents page ── */
+  .agent-name { font-weight: 500; }
+  .agent-id   { font-size: 11px; color: var(--text3); font-family: monospace; margin-top: 1px; }
+  .queue-name { font-size: 11px; font-family: monospace; color: var(--blue); background: var(--blue-bg); padding: 1px 6px; border-radius: 4px; }
+  .instruction-preview { font-size: 11px; color: var(--text3); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Routing page ── */
+  .reply-target { font-size: 12px; font-family: monospace; color: var(--blue); }
+  .reply-default{ font-size: 12px; color: var(--text3); font-style: italic; }
+  .event-tag {
+    display: inline-block;
+    background: rgba(110,231,183,.08); border: 1px solid rgba(110,231,183,.2);
+    border-radius: 4px; padding: 1px 6px; font-size: 11px;
+    font-family: monospace; color: var(--accent);
+    margin-right: 3px;
+  }
+  .catchall { font-size: 12px; color: var(--text3); font-style: italic; }
+
+  /* ── Logs page ── */
+  .log-row td { font-size: 12px; }
+  .log-status.queued   { color: var(--accent); }
+  .log-status.error    { color: var(--red); }
+  .log-status.rejected { color: var(--yellow); }
+  .log-status.challenge{ color: var(--text3); }
+  .mono { font-family: monospace; }
+
+  /* ── Webhook URL box ── */
+  .url-box {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: monospace; font-size: 12px;
+    color: var(--text2);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  .url-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── Detail panel (slide-in) ── */
+  .detail-panel {
+    position: fixed; right: 0; top: 0; bottom: 0;
+    width: 420px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    transform: translateX(100%);
+    transition: transform .2s ease;
+    z-index: 50;
+  }
+  .detail-panel.open { transform: translateX(0); }
+  .panel-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .panel-title { font-size: 14px; font-weight: 600; }
+  .panel-body  { padding: 20px; flex: 1; overflow-y: auto; }
+  .panel-close { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 18px; padding: 2px; }
+
+  /* ── Form ── */
+  .form-row { margin-bottom: 16px; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text2); margin-bottom: 6px; display: block; }
+  .form-input {
+    width: 100%; padding: 8px 12px;
+    background: var(--surface2); border: 1px solid var(--border2);
+    border-radius: var(--radius); color: var(--text); font-size: 13px;
+    outline: none; transition: border-color .15s;
+  }
+  .form-input:focus { border-color: var(--accent); }
+  .form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
+  select.form-input { cursor: pointer; }
+  .form-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--border); margin-top: 20px; }
+
+  /* ── Log terminal ── */
+  .terminal {
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    height: 260px;
+    overflow-y: auto;
+    color: #d4d4d4;
+  }
+  .log-line { padding: 1px 0; }
+  .log-line .ts    { color: #555; margin-right: 8px; }
+  .log-line.info   .msg { color: #d4d4d4; }
+  .log-line.error  .msg { color: var(--red); }
+  .log-line.accent .msg { color: var(--accent); }
+
+  /* ── Empty state ── */
+  .empty { padding: 48px 24px; text-align: center; color: var(--text3); }
+  .empty-icon { font-size: 32px; margin-bottom: 12px; }
+  .empty-title { font-size: 14px; color: var(--text2); margin-bottom: 6px; }
+  .empty-sub { font-size: 12px; }
+
+  /* ── Playground ── */
+  .chat-area {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    height: 360px;
+    overflow-y: auto;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .message { margin-bottom: 14px; display: flex; gap: 10px; }
+  .message .avatar-sm { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; margin-top: 2px; }
+  .message .bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 13px; font-size: 13px; max-width: 90%; line-height: 1.6; }
+  .message.user .bubble { background: var(--accent-bg); border-color: rgba(110,231,183,.2); margin-left: auto; }
+  .message.user { flex-direction: row-reverse; }
+  .chat-input-row { display: flex; gap: 8px; }
+  .chat-input { flex: 1; padding: 10px 14px; background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius); color: var(--text); font-size: 13px; outline: none; }
+  .chat-input:focus { border-color: var(--accent); }
+
+  /* ── Page nav tabs ── */
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+  .tab { padding: 9px 14px; font-size: 13px; color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Overlay ── */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 40; display: none; }
+  .overlay.open { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">A</div>
+    <div>
+      <div class="logo-text">Agent Manager</div>
+      <div class="logo-sub">wpbawsed</div>
+    </div>
+  </div>
+
+  <nav class="nav">
+    <div class="nav-section">
+      <div class="nav-label">Overview</div>
+      <div class="nav-item active" onclick="showPage('agents')">
+        <span class="icon">⬡</span> Agents
+        <span class="nav-badge">4</span>
+      </div>
+      <div class="nav-item" onclick="showPage('queues')">
+        <span class="icon">▣</span> Queues
+        <span class="nav-badge">3</span>
+      </div>
+      <div class="nav-item" onclick="showPage('brokers')">
+        <span class="icon">⇄</span> Brokers
+        <span class="nav-badge">5</span>
+      </div>
+      <div class="nav-item" onclick="showPage('routing')">
+        <span class="icon">◈</span> Routing
+        <span class="nav-badge">4</span>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">Observe</div>
+      <div class="nav-item" onclick="showPage('logs')">
+        <span class="icon">≡</span> Logs
+      </div>
+      <div class="nav-item" onclick="showPage('playground')">
+        <span class="icon">▷</span> Playground
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">System</div>
+      <div class="nav-item" onclick="showPage('admin')">
+        <span class="icon">⚙</span> Admin
+      </div>
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="user-row">
+      <div class="avatar">W</div>
+      <div class="user-info">
+        <div class="user-email">wpbawsed@gmail.com</div>
+        <div class="user-role">owner</div>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main">
+
+  <!-- ═══════════════════════════════════════════════════ AGENTS ══ -->
+  <div id="page-agents" class="page active">
+    <div class="topbar">
+      <span class="page-title">Agents</span>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" onclick="openPanel('panel-agent-new')">+ New Agent</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-label">Total Agents</div>
+          <div class="stat-value">4</div>
+          <div class="stat-sub">across all brokers</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Running</div>
+          <div class="stat-value green">2</div>
+          <div class="stat-sub">active processes</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Jobs Today</div>
+          <div class="stat-value">37</div>
+          <div class="stat-sub">across all queues</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Errors (24h)</div>
+          <div class="stat-value red">2</div>
+          <div class="stat-sub">failed jobs</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">All Agents</div>
+            <div class="card-sub">每個 Agent 綁定一個 Queue，收到任務後自動執行</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Queue</th>
+              <th>Status</th>
+              <th>Instruction</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="agent-name">jira-claude-cli-agent</div>
+                <div class="agent-id">539a247d-90f7...</div>
+              </td>
+              <td><span class="queue-name">jira-queue</span></td>
+              <td><span class="badge running">Running</span></td>
+              <td><span class="instruction-preview">收到 Jira issue 後自動實作並發 PR…</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm" onclick="showPage('playground')">▷ Test</button>
+                  <button class="btn btn-danger btn-sm">Stop</button>
+                  <button class="btn btn-ghost btn-sm" onclick="openPanel('panel-agent-log')">Logs</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="agent-name">railway-event-agent</div>
+                <div class="agent-id">c34b54ae-84bd...</div>
+              </td>
+              <td><span class="queue-name">railway-queue</span></td>
+              <td><span class="badge running">Running</span></td>
+              <td><span class="instruction-preview">收到 Railway 部署失敗後取 log 並修復…</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">▷ Test</button>
+                  <button class="btn btn-danger btn-sm">Stop</button>
+                  <button class="btn btn-ghost btn-sm">Logs</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="agent-name">notion-agent</div>
+                <div class="agent-id">a1b2c3d4-e5f6...</div>
+              </td>
+              <td><span class="queue-name">notion-queue</span></td>
+              <td><span class="badge stopped">Stopped</span></td>
+              <td><span class="instruction-preview">Notion 頁面更新後同步整理任務清單…</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">▷ Test</button>
+                  <button class="btn btn-primary btn-sm">Start</button>
+                  <button class="btn btn-ghost btn-sm">Logs</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="agent-name">unassigned-agent</div>
+                <div class="agent-id">f1a2b3c4-d5e6...</div>
+              </td>
+              <td><span style="color:var(--text3); font-size:12px">—</span></td>
+              <td><span class="badge stopped">Stopped</span></td>
+              <td><span class="instruction-preview">（未設定 instruction）</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">▷ Test</button>
+                  <button class="btn btn-primary btn-sm">Start</button>
+                  <button class="btn btn-ghost btn-sm">Logs</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ QUEUES ══ -->
+  <div id="page-queues" class="page">
+    <div class="topbar">
+      <span class="page-title">Queues</span>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" onclick="openPanel('panel-queue-new')">+ New Queue</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card" style="margin-bottom:16px; padding:14px 18px; background:rgba(96,165,250,.04); border-color:rgba(96,165,250,.2);">
+        <div style="font-size:12px; color:var(--blue);">
+          ▣ Queue 是獨立實體（如 SQS），由 Routing Rule 決定哪個 Broker 事件打進來，Agent 1:1 綁定 Queue 監聽。
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">All Queues</div>
+          <div class="card-sub">每個 Queue 可被多個 Routing Rule 指向，但只能被一個 Agent 消費</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Agent</th>
+              <th>Routing Rules</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="queue-name">jira-queue</span></td>
+              <td style="color:var(--text2); font-size:12px">Jira issue events</td>
+              <td><span class="agent-name" style="font-size:12px">jira-claude-cli-agent</span></td>
+              <td style="font-size:12px; color:var(--text3)">2 rules</td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="queue-name">railway-queue</span></td>
+              <td style="color:var(--text2); font-size:12px">Railway deploy events</td>
+              <td><span class="agent-name" style="font-size:12px">railway-event-agent</span></td>
+              <td style="font-size:12px; color:var(--text3)">1 rule</td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="queue-name">notion-queue</span></td>
+              <td style="color:var(--text2); font-size:12px">Notion page updates</td>
+              <td><span class="agent-name" style="font-size:12px">notion-agent</span></td>
+              <td style="font-size:12px; color:var(--text3)">1 rule</td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ BROKERS ══ -->
+  <div id="page-brokers" class="page">
+    <div class="topbar">
+      <span class="page-title">Brokers</span>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" onclick="openPanel('panel-broker-new')">+ New Broker</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Webhook Sources</div>
+            <div class="card-sub">Each broker receives events from one external platform</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Webhook URL</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><div class="agent-name">Wishmobile Jira</div></td>
+              <td><span class="chip jira">Jira</span></td>
+              <td><span class="badge active">Active</span></td>
+              <td>
+                <div class="url-box" style="max-width:320px">
+                  <span class="url-text">https://xxx.trycloudflare.com/wpbawsed/jira/539a...</span>
+                  <button class="btn btn-ghost btn-sm">Copy</button>
+                </div>
+              </td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-danger btn-sm">Deactivate</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="agent-name">Notion Workspace</div></td>
+              <td><span class="chip notion">Notion</span></td>
+              <td><span class="badge active">Active</span></td>
+              <td>
+                <div class="url-box" style="max-width:320px">
+                  <span class="url-text">https://xxx.trycloudflare.com/wpbawsed/notion/c34b...</span>
+                  <button class="btn btn-ghost btn-sm">Copy</button>
+                </div>
+              </td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-danger btn-sm">Deactivate</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="agent-name">LINE OA Group</div></td>
+              <td><span class="chip line">LINE</span></td>
+              <td><span class="badge active">Active</span></td>
+              <td>
+                <div class="url-box" style="max-width:320px">
+                  <span class="url-text">https://xxx.trycloudflare.com/wpbawsed/line/a1b2...</span>
+                  <button class="btn btn-ghost btn-sm">Copy</button>
+                </div>
+              </td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-danger btn-sm">Deactivate</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><div class="agent-name">Railway Deploy</div></td>
+              <td><span class="chip railway">Railway</span></td>
+              <td><span class="badge inactive">Inactive</span></td>
+              <td>
+                <div class="url-box" style="max-width:320px">
+                  <span class="url-text">https://xxx.trycloudflare.com/wpbawsed/railway/f1a2...</span>
+                  <button class="btn btn-ghost btn-sm">Copy</button>
+                </div>
+              </td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-primary btn-sm">Activate</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════ ROUTING ══ -->
+  <div id="page-routing" class="page">
+    <div class="topbar">
+      <span class="page-title">Routing</span>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" onclick="openPanel('panel-rule-new')">+ Add Rule</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="card" style="margin-bottom:16px; padding: 16px 20px; background: rgba(251,191,36,.04); border-color: rgba(251,191,36,.2);">
+        <div style="font-size:12px; color: var(--yellow);">
+          ⟳ <strong>replyTarget</strong> — 設定後，agent 會回覆到指定 URI，而非事件的原始來源。例如：Railway 部署事件 → 通知到 <code>slack://C1234567</code>。
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Routing Rules</div>
+          <div class="card-sub">eventTypes 為空 = catch-all；符合則派送至指定 Queue</div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Broker</th>
+              <th>Queue</th>
+              <th>Event Types</th>
+              <th>Reply Target</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="chip jira">Wishmobile Jira</span></td>
+              <td><span class="queue-name">jira-queue</span></td>
+              <td>
+                <span class="event-tag">issue_created</span>
+                <span class="event-tag">issue_updated</span>
+              </td>
+              <td><span class="reply-default">原路回覆</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm" onclick="openPanel('panel-rule-edit')">Edit</button>
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="chip notion">Notion Workspace</span></td>
+              <td><span class="queue-name">notion-queue</span></td>
+              <td><span class="catchall">catch-all</span></td>
+              <td><span class="reply-default">原路回覆</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="chip line">LINE OA Group</span></td>
+              <td><span class="queue-name">jira-queue</span></td>
+              <td>
+                <span class="event-tag">message</span>
+              </td>
+              <td><span class="reply-default">原路回覆</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm">Edit</button>
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td><span class="chip railway">Railway Deploy</span></td>
+              <td><span class="queue-name">railway-queue</span></td>
+              <td>
+                <span class="event-tag">deployment_failed</span>
+              </td>
+              <td><span class="reply-target">slack://C0987654321</span></td>
+              <td>
+                <div class="action-group">
+                  <button class="btn btn-ghost btn-sm" onclick="openPanel('panel-rule-edit')">Edit</button>
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════ LOGS ══ -->
+  <div id="page-logs" class="page">
+    <div class="topbar">
+      <span class="page-title">Logs</span>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost btn-sm">Export</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="tabs">
+        <div class="tab active">Webhook Events</div>
+        <div class="tab">Agent Logs</div>
+      </div>
+      <div class="card">
+        <div class="card-header" style="gap:12px; flex-wrap:wrap;">
+          <div class="card-title">Incoming Webhooks</div>
+          <div style="margin-left:auto; display:flex; gap:8px;">
+            <select class="form-input btn-sm" style="width:140px">
+              <option>All Brokers</option>
+              <option>Wishmobile Jira</option>
+              <option>Notion Workspace</option>
+              <option>LINE OA Group</option>
+            </select>
+            <select class="form-input btn-sm" style="width:120px">
+              <option>All Status</option>
+              <option>queued</option>
+              <option>error</option>
+              <option>challenge</option>
+            </select>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Source</th>
+              <th>Event Type</th>
+              <th>Status</th>
+              <th>Routed</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody class="log-row">
+            <tr>
+              <td class="mono" style="color:var(--text3)">14:32:07</td>
+              <td><span class="chip jira">Jira</span></td>
+              <td class="mono">issue_updated</td>
+              <td><span class="log-status queued">queued</span></td>
+              <td>1</td>
+              <td><button class="btn btn-ghost btn-sm">View</button></td>
+            </tr>
+            <tr>
+              <td class="mono" style="color:var(--text3)">14:28:19</td>
+              <td><span class="chip line">LINE</span></td>
+              <td class="mono">message</td>
+              <td><span class="log-status queued">queued</span></td>
+              <td>1</td>
+              <td><button class="btn btn-ghost btn-sm">View</button></td>
+            </tr>
+            <tr>
+              <td class="mono" style="color:var(--text3)">14:20:55</td>
+              <td><span class="chip notion">Notion</span></td>
+              <td class="mono">url_verification</td>
+              <td><span class="log-status challenge">challenge</span></td>
+              <td>0</td>
+              <td><button class="btn btn-ghost btn-sm">View</button></td>
+            </tr>
+            <tr>
+              <td class="mono" style="color:var(--text3)">13:55:41</td>
+              <td><span class="chip jira">Jira</span></td>
+              <td class="mono">issue_created</td>
+              <td><span class="log-status error">error</span></td>
+              <td>0</td>
+              <td><button class="btn btn-ghost btn-sm">View</button></td>
+            </tr>
+            <tr>
+              <td class="mono" style="color:var(--text3)">13:44:02</td>
+              <td><span class="chip railway">Railway</span></td>
+              <td class="mono">DEPLOYMENT_SUCCESS</td>
+              <td><span class="log-status queued">queued</span></td>
+              <td>1</td>
+              <td><button class="btn btn-ghost btn-sm">View</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════ PLAYGROUND ══ -->
+  <div id="page-playground" class="page">
+    <div class="topbar">
+      <span class="page-title">Playground</span>
+    </div>
+    <div class="content">
+      <div style="display:grid; grid-template-columns:220px 1fr; gap:20px; max-width:900px;">
+        <div>
+          <div class="form-row">
+            <label class="form-label">Agent</label>
+            <select class="form-input">
+              <option>jira-claude-cli-agent</option>
+              <option>notion-claude-cli-agent</option>
+              <option>line-group-agent</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Mode</label>
+            <select class="form-input">
+              <option>Single Message</option>
+              <option>Multi-turn</option>
+            </select>
+          </div>
+          <div style="padding:12px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); font-size:12px; color:var(--text3);">
+            <div style="color:var(--text2); margin-bottom:4px; font-weight:500;">jira-claude-cli-agent</div>
+            Mode 2 · jira.js<br>
+            Queue: broker-539a...<br>
+            Status: <span style="color:var(--accent)">Running</span>
+          </div>
+        </div>
+        <div>
+          <div class="chat-area">
+            <div class="message user">
+              <div class="avatar-sm" style="background: var(--accent); display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#0d0d0d;">W</div>
+              <div class="bubble">TEST-42 這個 issue 狀態有更新，請確認是否需要補充資訊。</div>
+            </div>
+            <div class="message">
+              <div class="avatar-sm" style="background:linear-gradient(135deg,#60a5fa,#818cf8);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">AI</div>
+              <div class="bubble">AI回覆：已查閱 TEST-42 的狀態更新。目前已由「To Do」轉為「In Progress」，負責人為 hsunyang_wang。根據 description，此 issue 需要 API endpoint 測試文件。建議補充以下資訊：<br><br>1. 預期的 request/response 格式<br>2. 測試環境的 base URL<br>3. 驗證所需的 token 範例<br><br>已將卡片移至 Wait UAT。</div>
+            </div>
+          </div>
+          <div class="chat-input-row">
+            <input class="chat-input" placeholder="輸入訊息，模擬傳送給 agent..." />
+            <button class="btn btn-primary">Send ↑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════════════════════ ADMIN ══ -->
+  <div id="page-admin" class="page">
+    <div class="topbar">
+      <span class="page-title">Admin</span>
+    </div>
+    <div class="content">
+      <div class="stats" style="grid-template-columns:repeat(3,1fr); max-width:700px;">
+        <div class="stat-card">
+          <div class="stat-label">Total Users</div>
+          <div class="stat-value">1</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Agents</div>
+          <div class="stat-value">4</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Webhook Events (7d)</div>
+          <div class="stat-value">142</div>
+        </div>
+      </div>
+      <div class="card" style="max-width:700px;">
+        <div class="card-header"><div class="card-title">Users</div></div>
+        <table>
+          <thead>
+            <tr><th>Email</th><th>Role</th><th>Subdomain</th><th>Agents</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>wpbawsed@gmail.com</td>
+              <td><span class="chip">owner</span></td>
+              <td class="mono">wpbawsed</td>
+              <td>4</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ══════════════════════════════════════════════ PANELS ══ -->
+<div class="overlay" id="overlay" onclick="closePanels()"></div>
+
+<!-- Panel: New Agent -->
+<div class="detail-panel" id="panel-agent-new">
+  <div class="panel-header">
+    <span class="panel-title">New Agent</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="form-row">
+      <label class="form-label">Name</label>
+      <input class="form-input" placeholder="e.g. jira-handler-agent" />
+    </div>
+    <div class="form-row">
+      <label class="form-label">Queue <span style="color:var(--text3)">(optional)</span></label>
+      <select class="form-input">
+        <option value="">— Select queue —</option>
+        <option>jira-queue</option>
+        <option>railway-queue</option>
+        <option>notion-queue</option>
+      </select>
+      <div class="form-hint">Agent 啟動後監聽此 Queue 的任務</div>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Instruction <span style="color:var(--text3)">(optional)</span></label>
+      <textarea class="form-input" rows="4" placeholder="你是一個全端開發 Agent，收到 Jira issue 後自動實作並發 PR…" style="resize:vertical;"></textarea>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closePanels()">Cancel</button>
+      <button class="btn btn-primary">Create Agent</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel: Agent Logs -->
+<div class="detail-panel" id="panel-agent-log">
+  <div class="panel-header">
+    <span class="panel-title">jira-claude-cli-agent — Logs</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div style="display:flex; gap:8px; margin-bottom:12px;">
+      <span class="badge running">Running</span>
+      <span style="font-size:12px; color:var(--text3)">PID 38291 · Uptime 2h 14m</span>
+    </div>
+    <div class="terminal">
+      <div class="log-line accent"><span class="ts">14:32:07</span><span class="msg">[jira-channel] Connected. Listening on queue: broker-539a...</span></div>
+      <div class="log-line info"><span class="ts">14:32:09</span><span class="msg">[jira-channel] Job 101 received — TEST-42</span></div>
+      <div class="log-line info"><span class="ts">14:32:09</span><span class="msg">[jira-channel] Transitioned TEST-42 → "進行中"</span></div>
+      <div class="log-line info"><span class="ts">14:32:31</span><span class="msg">[jira-channel] Job 101 replied and completed</span></div>
+      <div class="log-line info"><span class="ts">14:32:31</span><span class="msg">[jira-channel] Job 101 completed</span></div>
+      <div class="log-line info"><span class="ts">14:41:55</span><span class="msg">[jira-channel] Job 102 received — TEST-43</span></div>
+      <div class="log-line error"><span class="ts">14:42:01</span><span class="msg">[jira-channel] Cannot transition to In Progress: No transition matching "進行中"</span></div>
+    </div>
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button class="btn btn-ghost btn-sm">Clear</button>
+      <button class="btn btn-ghost btn-sm">Download</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel: New Queue -->
+<div class="detail-panel" id="panel-queue-new">
+  <div class="panel-header">
+    <span class="panel-title">New Queue</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="form-row">
+      <label class="form-label">Queue Name</label>
+      <input class="form-input" placeholder="e.g. jira-queue" style="font-family:monospace;" />
+      <div class="form-hint">唯一識別名稱，對應 BullMQ queue name</div>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Description <span style="color:var(--text3)">(optional)</span></label>
+      <input class="form-input" placeholder="e.g. Jira issue events for dev agent" />
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closePanels()">Cancel</button>
+      <button class="btn btn-primary">Create Queue</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel: New Broker -->
+<div class="detail-panel" id="panel-broker-new">
+  <div class="panel-header">
+    <span class="panel-title">New Broker</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="form-row">
+      <label class="form-label">Name</label>
+      <input class="form-input" placeholder="e.g. Wishmobile Jira" />
+    </div>
+    <div class="form-row">
+      <label class="form-label">Type</label>
+      <select class="form-input">
+        <option>— Select type —</option>
+        <option>jira</option>
+        <option>notion</option>
+        <option>slack</option>
+        <option>line</option>
+        <option>railway</option>
+        <option>github</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Signing Secret</label>
+      <input class="form-input" type="password" placeholder="Webhook signing secret" />
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closePanels()">Cancel</button>
+      <button class="btn btn-primary">Create Broker</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel: New Rule -->
+<div class="detail-panel" id="panel-rule-new">
+  <div class="panel-header">
+    <span class="panel-title">Add Routing Rule</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="form-row">
+      <label class="form-label">Name <span style="color:var(--text3)">(optional)</span></label>
+      <input class="form-input" placeholder="e.g. jira-to-dev-queue" />
+    </div>
+    <div class="form-row">
+      <label class="form-label">Broker</label>
+      <select class="form-input">
+        <option>— Select broker —</option>
+        <option>Wishmobile Jira</option>
+        <option>Notion Workspace</option>
+        <option>LINE OA Group</option>
+        <option>Railway Deploy</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Queue</label>
+      <select class="form-input">
+        <option>— Select queue —</option>
+        <option>jira-queue</option>
+        <option>railway-queue</option>
+        <option>notion-queue</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Event Types <span style="color:var(--text3)">(optional, 空白 = catch-all)</span></label>
+      <input class="form-input" placeholder="issue_created, issue_updated, deployment_failed …" style="font-family:monospace;font-size:12px;" />
+      <div class="form-hint">逗號分隔。符合 agentEvent.eventType 才派送</div>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Reply Target <span style="color:var(--text3)">(optional)</span></label>
+      <input class="form-input" placeholder="e.g. slack://C1234567 or jira://PROJ-1" />
+      <div class="form-hint">留空則回覆到事件的原始來源。格式：slack:// jira:// notion:// webhook://</div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closePanels()">Cancel</button>
+      <button class="btn btn-primary">Save Rule</button>
+    </div>
+  </div>
+</div>
+
+<!-- Panel: Edit Rule -->
+<div class="detail-panel" id="panel-rule-edit">
+  <div class="panel-header">
+    <span class="panel-title">Edit Routing Rule</span>
+    <button class="panel-close" onclick="closePanels()">✕</button>
+  </div>
+  <div class="panel-body">
+    <div class="form-row">
+      <label class="form-label">Broker</label>
+      <select class="form-input"><option selected>Railway Deploy</option></select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Queue</label>
+      <select class="form-input"><option selected>railway-queue</option></select>
+    </div>
+    <div class="form-row">
+      <label class="form-label">Event Types</label>
+      <input class="form-input" value="deployment_failed" style="font-family:monospace;font-size:12px;" />
+    </div>
+    <div class="form-row">
+      <label class="form-label">Reply Target</label>
+      <input class="form-input" value="slack://C0987654321" />
+      <div class="form-hint">Railway 部署失敗 → 通知到這個 Slack channel</div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closePanels()">Cancel</button>
+      <button class="btn btn-primary">Update Rule</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  event.currentTarget.classList.add('active');
+  closePanels();
+}
+function openPanel(id) {
+  closePanels();
+  document.getElementById(id).classList.add('open');
+  document.getElementById('overlay').classList.add('open');
+}
+function closePanels() {
+  document.querySelectorAll('.detail-panel').forEach(p => p.classList.remove('open'));
+  document.getElementById('overlay').classList.remove('open');
+}
+</script>
+</body>
+</html>

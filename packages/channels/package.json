@@ -1,0 +1,11 @@
+{
+  "name": "@agent-manager/channels",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@wpbawsed/agent-broker-core": "file:../../../agent-broker/packages/core",
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.0.0"
+  }
+}
