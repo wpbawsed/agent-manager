@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { users } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { users, agents, brokers, queues, routingRules, webhookEvents } from "../db/schema.js";
+import { eq, sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 
 export default async function adminRoutes(app: FastifyInstance) {
@@ -8,9 +8,30 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", app.authenticate);
   app.addHook("preHandler", async (req, reply) => {
     const user = req.user as { role: string };
-    if (user.role !== "admin") {
+    if (!["admin", "owner"].includes(user.role)) {
       return reply.status(403).send({ error: "Admin only" });
     }
+  });
+
+  // GET /api/admin/stats — summary counts
+  app.get("/stats", async (_req, reply) => {
+    const [[userCount], [agentCount], [brokerCount], [queueCount], [routingCount], [eventCount]] =
+      await Promise.all([
+        app.db.select({ count: sql<number>`count(*)::int` }).from(users),
+        app.db.select({ count: sql<number>`count(*)::int` }).from(agents),
+        app.db.select({ count: sql<number>`count(*)::int` }).from(brokers),
+        app.db.select({ count: sql<number>`count(*)::int` }).from(queues),
+        app.db.select({ count: sql<number>`count(*)::int` }).from(routingRules),
+        app.db.select({ count: sql<number>`count(*)::int` }).from(webhookEvents),
+      ]);
+    return reply.send({
+      users: userCount.count,
+      agents: agentCount.count,
+      brokers: brokerCount.count,
+      queues: queueCount.count,
+      routingRules: routingCount.count,
+      webhookEvents: eventCount.count,
+    });
   });
 
   // GET /api/admin/users — list all users

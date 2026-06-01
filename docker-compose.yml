@@ -22,7 +22,7 @@ services:
 
   api:
     build:
-      context: ./packages/api
+      context: ./apps/api
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
@@ -44,7 +44,7 @@ services:
 
   ui:
     build:
-      context: ./packages/ui
+      context: ./apps/ui
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
