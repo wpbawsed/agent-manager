@@ -1,67 +1,46 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import { login, register, getMe, type AuthUser } from "@/api/auth";
+import { defineStore } from 'pinia'
+import { authApi } from '@/api'
 
-export const useAuthStore = defineStore("auth", () => {
-  const user = ref<AuthUser | null>(null);
-  const token = ref<string | null>(localStorage.getItem("token"));
-  const loading = ref(false);
+interface User {
+  id: string
+  email: string
+  role: string
+  subdomain?: string
+}
 
-  function setAuth(u: AuthUser, t: string) {
-    user.value = u;
-    token.value = t;
-    localStorage.setItem("token", t);
-  }
-
-  function clearAuth() {
-    user.value = null;
-    token.value = null;
-    localStorage.removeItem("token");
-  }
-
-  async function doLogin(email: string, password: string) {
-    loading.value = true;
-    try {
-      const data = await login(email, password);
-      setAuth(data.user, data.token);
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function doRegister(email: string, password: string) {
-    loading.value = true;
-    try {
-      const data = await register(email, password);
-      setAuth(data.user, data.token);
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function fetchMe() {
-    if (!token.value) return;
-    loading.value = true;
-    try {
-      const data = await getMe();
-      user.value = data.user;
-    } catch {
-      clearAuth();
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  const isLoggedIn = () => !!token.value;
-
-  return {
-    user,
-    token,
-    loading,
-    doLogin,
-    doRegister,
-    fetchMe,
-    clearAuth,
-    isLoggedIn,
-  };
-});
+export const useAuthStore = defineStore('auth', {
+  state: () => ({
+    user: null as User | null,
+    token: localStorage.getItem('token') ?? null,
+  }),
+  getters: {
+    isLoggedIn: (state) => !!state.token,
+  },
+  actions: {
+    async login(email: string, password: string) {
+      const { data } = await authApi.login(email, password)
+      this.token = data.token
+      localStorage.setItem('token', data.token)
+      await this.fetchMe()
+    },
+    async register(email: string, password: string) {
+      const { data } = await authApi.register(email, password)
+      this.token = data.token
+      localStorage.setItem('token', data.token)
+      await this.fetchMe()
+    },
+    async fetchMe() {
+      try {
+        const { data } = await authApi.me()
+        this.user = data
+      } catch {
+        this.logout()
+      }
+    },
+    logout() {
+      this.user = null
+      this.token = null
+      localStorage.removeItem('token')
+    },
+  },
+})

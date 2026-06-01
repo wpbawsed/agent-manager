@@ -1,303 +1,160 @@
 <template>
-  <div style="display: flex; gap: 16px; height: calc(100vh - 96px);">
-    <!-- Vue Flow Graph -->
-    <div style="flex: 1; border: 1px solid #333; border-radius: 8px; overflow: hidden; background: #0f0f1a;">
-      <VueFlow
-        v-model:nodes="nodes"
-        v-model:edges="edges"
-        :fit-view-on-init="true"
-        :default-zoom="1"
-      >
-        <Background />
-        <Controls />
-        <MiniMap />
-
-        <template #node-broker="{ data }">
-          <div class="flow-node broker-node">
-            <div class="node-label">🔌 {{ data.label }}</div>
-            <div class="node-type">{{ data.type }}</div>
-            <div :class="['node-status', data.status]">{{ data.status }}</div>
-          </div>
-        </template>
-
-        <template #node-queue="{ data }">
-          <div class="flow-node queue-node">
-            <div class="node-label">📬 {{ data.label }}</div>
-            <div class="node-type">queue</div>
-          </div>
-        </template>
-
-        <template #node-agent="{ data }">
-          <div class="flow-node agent-node">
-            <div class="node-label">🤖 {{ data.label }}</div>
-            <div :class="['node-status', data.status]">{{ data.status }}</div>
-          </div>
-        </template>
-      </VueFlow>
+  <div style="padding:24px;">
+    <div class="alert alert-info" style="margin-bottom:20px;">
+      ⟳ <strong>replyTarget</strong> — 設定後，agent 會回覆到指定 URI，而非事件的原始來源。
+      例如：Railway 部署事件 → 通知到 <code>slack://C1234567</code>
     </div>
 
-    <!-- Right Panel -->
-    <div style="width: 300px; display: flex; flex-direction: column; gap: 12px;">
-      <!-- Add Rule -->
-      <n-card title="新增路由規則" size="small">
-        <n-form label-placement="top" size="small">
-          <n-form-item label="名稱（選填）">
-            <n-input v-model:value="newRule.name" placeholder="my-rule" />
-          </n-form-item>
-          <n-form-item label="Broker">
-            <n-select
-              v-model:value="newRule.brokerId"
-              :options="brokerOptions"
-              placeholder="選擇 Broker"
-            />
-          </n-form-item>
-          <n-form-item label="Queue">
-            <n-select
-              v-model:value="newRule.queueId"
-              :options="queueOptions"
-              placeholder="選擇 Queue"
-            />
-          </n-form-item>
-          <n-form-item label="Event Types（選填，空白 = 全部接收）">
-            <n-select
-              v-model:value="newRule.eventTypes"
-              multiple
-              filterable
-              tag
-              :options="eventTypeOptions"
-              placeholder="輸入後 Enter 新增"
-            />
-          </n-form-item>
-          <n-button
-            type="primary"
-            size="small"
-            block
-            :loading="adding"
-            :disabled="!newRule.brokerId || !newRule.queueId"
-            @click="addRule"
-          >
-            建立連線
-          </n-button>
-        </n-form>
-      </n-card>
-
-      <!-- Rule List -->
-      <n-card title="現有規則" size="small" style="flex: 1; overflow: auto;">
-        <n-empty v-if="routingStore.rules.length === 0" description="尚無規則" size="small" />
-        <div v-for="rule in routingStore.rules" :key="rule.id" style="margin-bottom: 8px; padding: 8px; background: #1a1a2e; border-radius: 4px;">
-          <div style="font-size: 12px; font-weight: 600; margin-bottom: 2px;">
-            {{ rule.name || '(未命名)' }}
-          </div>
-          <div style="font-size: 11px; color: #999; margin-bottom: 4px;">
-            {{ brokerName(rule.brokerId) }} → {{ queueName(rule.queueId) }}
-          </div>
-          <div v-if="rule.eventTypes" style="font-size: 11px; color: #7c3aed; margin-bottom: 4px;">
-            {{ parsedEventTypes(rule.eventTypes).join(', ') }}
-          </div>
-          <n-popconfirm @positive-click="removeRule(rule.id)">
-            <template #trigger>
-              <n-button size="tiny" type="error">刪除</n-button>
-            </template>
-            確認刪除此路由規則？
-          </n-popconfirm>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Routing Rules</div>
+          <div class="card-sub">eventTypes 為空 = catch-all；符合則派送至指定 Queue</div>
         </div>
-      </n-card>
+        <button class="btn btn-primary btn-sm" @click="openCreate">+ Add Rule</button>
+      </div>
+      <div v-if="routing.loading" class="empty">載入中...</div>
+      <div v-else-if="!routing.rules.length" class="empty">尚無 Routing Rule</div>
+      <table v-else>
+        <thead>
+          <tr>
+            <th>Broker</th>
+            <th>Queue</th>
+            <th>Event Types</th>
+            <th>Reply Target</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in routing.rules" :key="r.id">
+            <td>
+              <div style="font-weight:500;">{{ r.brokerName ?? r.brokerId }}</div>
+              <span v-if="r.brokerType" class="chip" :class="r.brokerType" style="margin-top:4px;">{{ r.brokerType }}</span>
+            </td>
+            <td>
+              <span v-if="r.queueName" class="queue-tag">{{ r.queueName }}</span>
+              <span v-else style="color:var(--text3);">{{ r.queueId }}</span>
+            </td>
+            <td>
+              <template v-if="routing.eventTypesList(r).length">
+                <span v-for="et in routing.eventTypesList(r)" :key="et" class="event-tag">{{ et }}</span>
+              </template>
+              <span v-else class="catchall" style="color:var(--text3); font-style:italic; font-size:12px;">catch-all</span>
+            </td>
+            <td>
+              <span v-if="r.replyTarget" class="mono" style="font-size:12px; color:var(--blue);">{{ r.replyTarget }}</span>
+              <span v-else style="color:var(--text3); font-size:12px; font-style:italic;">原路回覆</span>
+            </td>
+            <td>
+              <button class="btn btn-danger btn-sm" @click="deleteRule(r.id)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Add Rule Modal -->
+    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">Add Routing Rule</div>
+          <button class="modal-close" @click="showCreate = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="createError" class="alert alert-error">{{ createError }}</div>
+          <div class="form-group">
+            <label class="form-label">Name (optional)</label>
+            <input v-model="form.name" class="form-input" placeholder="Jira → jira-queue" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Broker *</label>
+            <select v-model="form.brokerId" class="form-select">
+              <option value="">— Select broker —</option>
+              <option v-for="b in brokers.brokers" :key="b.id" :value="b.id">{{ b.name }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Queue *</label>
+            <select v-model="form.queueId" class="form-select">
+              <option value="">— Select queue —</option>
+              <option v-for="q in queues.queues" :key="q.id" :value="q.id">{{ q.name }}</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Event Types (optional, 空白 = catch-all)</label>
+            <input v-model="form.eventTypes" class="form-input" placeholder="issue_created, issue_updated" />
+            <div class="form-hint">逗號分隔。符合 agentEvent.eventType 才派送</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Reply Target (optional)</label>
+            <input v-model="form.replyTarget" class="form-input" placeholder="slack://C0987654321" />
+            <div class="form-hint">留空則回覆到事件的原始來源。格式：slack:// jira:// notion:// webhook://</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+          <button class="btn btn-primary" :disabled="creating" @click="createRule">
+            {{ creating ? '建立中...' : 'Add Rule' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
-import { VueFlow, type Node, type Edge } from '@vue-flow/core'
-import { Background } from '@vue-flow/background'
-import { Controls } from '@vue-flow/controls'
-import { MiniMap } from '@vue-flow/minimap'
-import '@vue-flow/core/dist/style.css'
-import '@vue-flow/core/dist/theme-default.css'
-import {
-  NCard, NForm, NFormItem, NSelect, NInput, NButton, NEmpty, NPopconfirm
-} from 'naive-ui'
-import { useAgentsStore } from '@/stores/agents'
+import { ref, onMounted } from 'vue'
+import { useRoutingStore } from '@/stores/routing'
 import { useBrokersStore } from '@/stores/brokers'
 import { useQueuesStore } from '@/stores/queues'
-import { useRoutingStore } from '@/stores/routing'
 
-const agentsStore = useAgentsStore()
-const brokersStore = useBrokersStore()
-const queuesStore = useQueuesStore()
-const routingStore = useRoutingStore()
+const routing = useRoutingStore()
+const brokers = useBrokersStore()
+const queues  = useQueuesStore()
 
-agentsStore.fetchAgents()
-brokersStore.fetchBrokers()
-queuesStore.fetchQueues()
-routingStore.fetchRules()
+const showCreate = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const form = ref({ name: '', brokerId: '', queueId: '', eventTypes: '', replyTarget: '' })
 
-// Select options
-const brokerOptions = computed(() =>
-  brokersStore.brokers.map(b => ({ label: `${b.name} (${b.type})`, value: b.id }))
-)
-const queueOptions = computed(() =>
-  queuesStore.queues.map(q => ({ label: q.name, value: q.id }))
-)
-
-// Common event types per broker type (used as hints; user can type custom ones too)
-const eventTypeOptions = computed(() => {
-  const broker = brokersStore.brokers.find(b => b.id === newRule.brokerId)
-  const hints: Record<string, string[]> = {
-    jira: ['issue_created', 'issue_updated', 'issue_commented', 'issue_deleted'],
-    railway: ['deployment_failed', 'deployment_success', 'deployment_started'],
-    slack: ['message', 'app_mention'],
-    github: ['push', 'pull_request', 'issues'],
-    line: ['message', 'follow'],
-    notion: ['page_created', 'page_updated'],
-  }
-  const types = broker ? (hints[broker.type] ?? []) : []
-  return types.map(t => ({ label: t, value: t }))
-})
-
-function brokerName(id: string) {
-  return brokersStore.brokers.find(b => b.id === id)?.name ?? id.slice(0, 8)
-}
-function queueName(id: string) {
-  return queuesStore.queues.find(q => q.id === id)?.name ?? id.slice(0, 8)
-}
-function parsedEventTypes(raw: string): string[] {
-  try { return JSON.parse(raw) as string[] } catch { return [] }
+function openCreate() {
+  form.value = { name: '', brokerId: '', queueId: '', eventTypes: '', replyTarget: '' }
+  createError.value = ''
+  showCreate.value = true
 }
 
-// Vue Flow nodes & edges
-const nodes = ref<Node[]>([])
-const edges = ref<Edge[]>([])
-
-function rebuildGraph() {
-  const brokerNodes: Node[] = brokersStore.brokers.map((b, i) => ({
-    id: `broker-${b.id}`,
-    type: 'broker',
-    position: { x: 50, y: 60 + i * 140 },
-    data: { label: b.name, type: b.type, status: b.status },
-  }))
-
-  const queueNodes: Node[] = queuesStore.queues.map((q, i) => ({
-    id: `queue-${q.id}`,
-    type: 'queue',
-    position: { x: 320, y: 60 + i * 140 },
-    data: { label: q.name },
-  }))
-
-  const agentNodes: Node[] = agentsStore.agents
-    .filter(a => a.queueId)
-    .map((a, i) => ({
-      id: `agent-${a.id}`,
-      type: 'agent',
-      position: { x: 580, y: 60 + i * 140 },
-      data: { label: a.name, status: a.status },
-    }))
-
-  const routerEdges: Edge[] = routingStore.rules.map(r => ({
-    id: `edge-${r.id}`,
-    source: `broker-${r.brokerId}`,
-    target: `queue-${r.queueId}`,
-    animated: true,
-    label: parsedEventTypes(r.eventTypes ?? '').join(', ') || undefined,
-    style: { stroke: '#7c3aed' },
-  }))
-
-  const agentEdges: Edge[] = agentsStore.agents
-    .filter(a => a.queueId)
-    .map(a => ({
-      id: `agent-edge-${a.id}`,
-      source: `queue-${a.queueId}`,
-      target: `agent-${a.id}`,
-      animated: false,
-      style: { stroke: '#3b82f6' },
-    }))
-
-  nodes.value = [...brokerNodes, ...queueNodes, ...agentNodes]
-  edges.value = [...routerEdges, ...agentEdges]
+async function deleteRule(id: string) {
+  if (!confirm('確定要刪除此 Routing Rule？')) return
+  await routing.delete(id)
 }
 
-watch(
-  [() => brokersStore.brokers, () => queuesStore.queues, () => agentsStore.agents, () => routingStore.rules],
-  rebuildGraph,
-  { deep: true, immediate: true }
-)
-
-// Add / Remove Rule
-const newRule = reactive({ name: '', brokerId: '', queueId: '', eventTypes: [] as string[] })
-const adding = ref(false)
-
-async function addRule() {
-  adding.value = true
+async function createRule() {
+  if (!form.value.brokerId || !form.value.queueId) return
+  creating.value = true
+  createError.value = ''
   try {
-    await routingStore.addRule({
-      name: newRule.name || undefined,
-      brokerId: newRule.brokerId,
-      queueId: newRule.queueId,
-      eventTypes: newRule.eventTypes.length > 0 ? newRule.eventTypes : undefined,
+    const eventTypes = form.value.eventTypes
+      ? JSON.stringify(form.value.eventTypes.split(',').map((s) => s.trim()).filter(Boolean))
+      : undefined
+    await routing.create({
+      name: form.value.name || undefined,
+      brokerId: form.value.brokerId,
+      queueId: form.value.queueId,
+      eventTypes,
+      replyTarget: form.value.replyTarget || undefined,
     })
-    newRule.name = ''
-    newRule.brokerId = ''
-    newRule.queueId = ''
-    newRule.eventTypes = []
+    showCreate.value = false
+  } catch (e: unknown) {
+    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+    createError.value = msg ?? '建立失敗'
   } finally {
-    adding.value = false
+    creating.value = false
   }
 }
 
-async function removeRule(id: string) {
-  await routingStore.removeRule(id)
-}
+onMounted(() => {
+  routing.fetch()
+  brokers.fetch()
+  queues.fetch()
+})
 </script>
-
-<style scoped>
-.flow-node {
-  padding: 10px 14px;
-  border-radius: 8px;
-  min-width: 130px;
-  font-size: 12px;
-}
-.broker-node {
-  background: #3b1f0a;
-  border: 1.5px solid #f97316;
-  color: #fed7aa;
-}
-.queue-node {
-  background: #1a0a3b;
-  border: 1.5px solid #7c3aed;
-  color: #ddd6fe;
-}
-.agent-node {
-  background: #0a1f3b;
-  border: 1.5px solid #3b82f6;
-  color: #bfdbfe;
-}
-.node-label {
-  font-weight: 600;
-  margin-bottom: 2px;
-}
-.node-type {
-  color: #888;
-  font-size: 11px;
-}
-.node-status {
-  margin-top: 4px;
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  display: inline-block;
-}
-.node-status.active,
-.node-status.running {
-  background: #14532d;
-  color: #86efac;
-}
-.node-status.inactive,
-.node-status.stopped {
-  background: #1c1c1c;
-  color: #888;
-}
-.node-status.error {
-  background: #450a0a;
-  color: #fca5a5;
-}
-</style>

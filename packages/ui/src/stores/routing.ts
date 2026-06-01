@@ -1,36 +1,43 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import {
-  listRoutingRules,
-  createRoutingRule,
-  deleteRoutingRule,
-  type RoutingRule,
-  type CreateRoutingRulePayload,
-} from "@/api/routing";
+import { defineStore } from 'pinia'
+import { routingApi } from '@/api'
 
-export const useRoutingStore = defineStore("routing", () => {
-  const rules = ref<RoutingRule[]>([]);
-  const loading = ref(false);
+export interface RoutingRule {
+  id: string
+  name?: string
+  brokerId: string
+  brokerName?: string
+  brokerType?: string
+  queueId: string
+  queueName?: string
+  eventTypes?: string   // JSON string[]
+  replyTarget?: string
+  createdAt: number
+}
 
-  async function fetchRules() {
-    loading.value = true;
-    try {
-      rules.value = await listRoutingRules();
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function addRule(payload: CreateRoutingRulePayload): Promise<RoutingRule> {
-    const rule = await createRoutingRule(payload);
-    rules.value.unshift(rule);
-    return rule;
-  }
-
-  async function removeRule(id: string) {
-    await deleteRoutingRule(id);
-    rules.value = rules.value.filter((r) => r.id !== id);
-  }
-
-  return { rules, loading, fetchRules, addRule, removeRule };
-});
+export const useRoutingStore = defineStore('routing', {
+  state: () => ({ rules: [] as RoutingRule[], loading: false }),
+  actions: {
+    async fetch() {
+      this.loading = true
+      try {
+        const { data } = await routingApi.list()
+        this.rules = data
+      } finally {
+        this.loading = false
+      }
+    },
+    async create(payload: Record<string, unknown>) {
+      const { data } = await routingApi.create(payload)
+      this.rules.unshift(data)
+      return data
+    },
+    async delete(id: string) {
+      await routingApi.delete(id)
+      this.rules = this.rules.filter((r) => r.id !== id)
+    },
+    eventTypesList(rule: RoutingRule): string[] {
+      if (!rule.eventTypes) return []
+      try { return JSON.parse(rule.eventTypes) } catch { return [] }
+    },
+  },
+})

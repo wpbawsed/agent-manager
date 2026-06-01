@@ -1,146 +1,145 @@
 <template>
-  <div>
-    <n-page-header title="Admin — 帳號管理" style="margin-bottom: 20px;" />
+  <div style="padding:24px;">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">System Stats</div>
+      </div>
+      <div class="stats-row" style="display:flex; gap:16px; padding:16px; flex-wrap:wrap;">
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.totalAgents }}</div>
+          <div class="stat-label">Total Agents</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" style="color:var(--green);">{{ stats.activeAgents }}</div>
+          <div class="stat-label">Active Agents</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.totalBrokers }}</div>
+          <div class="stat-label">Brokers</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.totalQueues }}</div>
+          <div class="stat-label">Queues</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{{ stats.totalUsers }}</div>
+          <div class="stat-label">Users</div>
+        </div>
+      </div>
+    </div>
 
-    <n-card>
-      <n-data-table
-        :columns="columns"
-        :data="users"
-        :loading="loading"
-        :row-key="row => row.id"
-        size="small"
-      />
-    </n-card>
-
-    <!-- Edit Role Modal -->
-    <n-modal v-model:show="showEditModal" preset="dialog" title="修改帳號">
-      <n-form ref="formRef" :model="editForm" label-placement="left" label-width="80px" style="margin-top: 12px;">
-        <n-form-item label="Email">
-          <n-input :value="editForm.email" disabled />
-        </n-form-item>
-        <n-form-item label="角色">
-          <n-select v-model:value="editForm.role" :options="roleOptions" />
-        </n-form-item>
-        <n-form-item label="新密碼">
-          <n-input v-model:value="editForm.password" type="password" placeholder="留空表示不變更" show-password-on="click" />
-        </n-form-item>
-      </n-form>
-      <template #action>
-        <n-button @click="showEditModal = false">取消</n-button>
-        <n-button type="primary" :loading="saving" @click="saveUser">儲存</n-button>
-      </template>
-    </n-modal>
+    <div class="card" style="margin-top:20px;">
+      <div class="card-header">
+        <div class="card-title">User Management</div>
+      </div>
+      <div v-if="loading" class="empty">載入中...</div>
+      <div v-else-if="!users.length" class="empty">無使用者</div>
+      <table v-else>
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Role</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in users" :key="u.id">
+            <td>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <div class="avatar">{{ u.username[0]?.toUpperCase() }}</div>
+                {{ u.username }}
+              </div>
+            </td>
+            <td><span class="badge" :class="u.role">{{ u.role }}</span></td>
+            <td style="font-size:12px; color:var(--text3);">{{ fmtDate(u.createdAt) }}</td>
+            <td>
+              <div class="action-group">
+                <button v-if="u.role !== 'admin'" class="btn btn-ghost btn-sm" @click="setAdmin(u.id)">→ admin</button>
+                <button class="btn btn-danger btn-sm" @click="deleteUser(u.id)">Delete</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, h, onMounted } from 'vue'
-import {
-  NPageHeader, NCard, NDataTable, NModal, NForm, NFormItem,
-  NInput, NButton, NSelect, NTag, NPopconfirm, NSpace,
-  useMessage,
-  type DataTableColumns
-} from 'naive-ui'
-import { useAuthStore } from '@/stores/auth'
-import { api } from '@/api/auth'
+import { ref, onMounted, computed } from 'vue'
+import { adminApi } from '@/api'
+import { useAgentsStore } from '@/stores/agents'
+import { useBrokersStore } from '@/stores/brokers'
+import { useQueuesStore } from '@/stores/queues'
 
-interface AdminUser {
-  id: string
-  email: string
-  role: string
-  createdAt: number
-}
+const agentsStore = useAgentsStore()
+const brokersStore = useBrokersStore()
+const queuesStore = useQueuesStore()
 
-const authStore = useAuthStore()
-const message = useMessage()
-
-const users = ref<AdminUser[]>([])
+const users = ref<any[]>([])
 const loading = ref(false)
-const saving = ref(false)
-const showEditModal = ref(false)
-const editForm = ref({ id: '', email: '', role: 'owner', password: '' })
 
-const roleOptions = [
-  { label: 'owner', value: 'owner' },
-  { label: 'admin', value: 'admin' },
-]
+const stats = computed(() => ({
+  totalAgents: agentsStore.agents.length,
+  activeAgents: agentsStore.agents.filter((a) => a.status === 'running').length,
+  totalBrokers: brokersStore.brokers.length,
+  totalQueues: queuesStore.queues.length,
+  totalUsers: users.value.length,
+}))
+
+function fmtDate(ts: number | string) {
+  return new Date(ts).toLocaleDateString('zh-TW')
+}
 
 async function fetchUsers() {
   loading.value = true
   try {
-    const res = await api.get<{ users: AdminUser[] }>('/admin/users')
-    users.value = res.data.users
-  } catch {
-    message.error('載入失敗')
+    const res = await adminApi.users()
+    users.value = res.data.users ?? res.data
   } finally {
     loading.value = false
   }
 }
 
-function openEdit(row: AdminUser) {
-  editForm.value = { id: row.id, email: row.email, role: row.role, password: '' }
-  showEditModal.value = true
-}
-
-async function saveUser() {
-  saving.value = true
-  try {
-    const payload: Record<string, string> = { role: editForm.value.role }
-    if (editForm.value.password) payload.password = editForm.value.password
-    await api.patch(`/admin/users/${editForm.value.id}`, payload)
-    message.success('已更新')
-    showEditModal.value = false
-    await fetchUsers()
-  } catch {
-    message.error('更新失敗')
-  } finally {
-    saving.value = false
-  }
+async function setAdmin(id: string) {
+  await adminApi.setRole(id, 'admin')
+  fetchUsers()
 }
 
 async function deleteUser(id: string) {
-  try {
-    await api.delete(`/admin/users/${id}`)
-    message.success('已刪除')
-    await fetchUsers()
-  } catch {
-    message.error('刪除失敗')
-  }
+  if (!confirm('確定要刪除此使用者？')) return
+  await adminApi.deleteUser(id)
+  fetchUsers()
 }
 
-const columns: DataTableColumns<AdminUser> = [
-  { title: 'Email', key: 'email' },
-  {
-    title: '角色',
-    key: 'role',
-    render: row => h(NTag, { type: row.role === 'admin' ? 'error' : 'info', size: 'small' }, () => row.role),
-  },
-  {
-    title: '建立時間',
-    key: 'createdAt',
-    render: row => new Date(row.createdAt).toLocaleString('zh-TW'),
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    render: row => {
-      const isSelf = row.id === authStore.user?.id
-      return h(NSpace, { size: 'small' }, () => [
-        h(NButton, { size: 'tiny', onClick: () => openEdit(row) }, () => '編輯'),
-        !isSelf
-          ? h(
-              NPopconfirm,
-              { onPositiveClick: () => deleteUser(row.id) },
-              {
-                default: () => `確定刪除 ${row.email}？`,
-                trigger: () => h(NButton, { size: 'tiny', type: 'error' }, () => '刪除'),
-              }
-            )
-          : null,
-      ])
-    },
-  },
-]
-
-onMounted(fetchUsers)
+onMounted(async () => {
+  await Promise.all([
+    agentsStore.fetch(),
+    brokersStore.fetch(),
+    queuesStore.fetch(),
+    fetchUsers(),
+  ])
+})
 </script>
+
+<style scoped>
+.stat-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  min-width: 120px;
+  text-align: center;
+}
+.stat-value { font-size: 28px; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.avatar {
+  width: 28px; height: 28px;
+  background: var(--accent);
+  color: #0d0d0d;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px;
+}
+</style>

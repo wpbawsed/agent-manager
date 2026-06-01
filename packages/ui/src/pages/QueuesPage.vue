@@ -1,116 +1,120 @@
 <template>
-  <div>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <span style="font-size: 13px; color: #999;">共 {{ queuesStore.queues.length }} 個 Queue</span>
-      <n-button type="primary" @click="openCreateModal">+ 新增 Queue</n-button>
+  <div style="padding:24px;">
+    <div class="alert alert-info" style="margin-bottom:20px;">
+      ▣ Queue 是獨立實體（如 SQS），由 Routing Rule 決定哪個 Broker 事件打進來，Agent 1:1 綁定 Queue 監聽。
     </div>
 
-    <n-data-table
-      :columns="columns"
-      :data="queuesStore.queues"
-      :loading="queuesStore.loading"
-      :row-key="(row: Queue) => row.id"
-      size="small"
-    />
-
-    <!-- Create Modal -->
-    <n-modal v-model:show="modalVisible" title="新增 Queue" style="width: 440px;">
-      <n-card>
-        <n-form ref="formRef" :model="form" :rules="formRules" label-placement="top">
-          <n-form-item label="名稱" path="name">
-            <n-input v-model:value="form.name" placeholder="b2b-crm-dev" />
-            <template #feedback>BullMQ queue name，建立後不可更改</template>
-          </n-form-item>
-          <n-form-item label="描述" path="description">
-            <n-input v-model:value="form.description" placeholder="（選填）" />
-          </n-form-item>
-        </n-form>
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
-          <n-button @click="modalVisible = false">取消</n-button>
-          <n-button type="primary" :loading="saving" @click="saveQueue">建立</n-button>
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">All Queues</div>
+          <div class="card-sub">每個 Queue 可被多個 Routing Rule 指向，但只能被一個 Agent 消費</div>
         </div>
-      </n-card>
-    </n-modal>
+        <button class="btn btn-primary btn-sm" @click="showCreate = true">+ New Queue</button>
+      </div>
+      <div v-if="queues.loading" class="empty">載入中...</div>
+      <div v-else-if="!queues.queues.length" class="empty">尚無 Queue</div>
+      <table v-else>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Agent</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="q in queues.queues" :key="q.id">
+            <td><code style="color:var(--accent); font-size:13px;">{{ q.name }}</code></td>
+            <td style="color:var(--text2);">{{ q.description || '—' }}</td>
+            <td>
+              <span v-if="agentForQueue(q.id)" style="font-size:12px; color:var(--text);">{{ agentForQueue(q.id) }}</span>
+              <span v-else style="font-size:12px; color:var(--text3);">No agent</span>
+            </td>
+            <td style="color:var(--text3); font-size:12px;">{{ fmtDate(q.createdAt) }}</td>
+            <td>
+              <button class="btn btn-danger btn-sm" @click="deleteQueue(q.id)">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- New Queue Modal -->
+    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">New Queue</div>
+          <button class="modal-close" @click="showCreate = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="createError" class="alert alert-error">{{ createError }}</div>
+          <div class="form-group">
+            <label class="form-label">Queue Name *</label>
+            <input v-model="form.name" class="form-input" placeholder="jira-queue" />
+            <div class="form-hint">唯一識別名稱，對應 BullMQ queue name</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Description (optional)</label>
+            <input v-model="form.description" class="form-input" placeholder="Jira issue events" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+          <button class="btn btn-primary" :disabled="creating" @click="createQueue">
+            {{ creating ? '建立中...' : 'Create Queue' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, h } from 'vue'
-import {
-  NDataTable, NButton, NModal, NCard, NForm, NFormItem,
-  NInput, NSpace, NPopconfirm, NTag,
-  useMessage,
-  type DataTableColumns, type FormInst, type FormRules
-} from 'naive-ui'
+import { ref, onMounted } from 'vue'
 import { useQueuesStore } from '@/stores/queues'
-import type { Queue } from '@/api/queues'
+import { useAgentsStore } from '@/stores/agents'
 
-const message = useMessage()
-const queuesStore = useQueuesStore()
-queuesStore.fetchQueues()
+const queues = useQueuesStore()
+const agents = useAgentsStore()
 
-const modalVisible = ref(false)
-const saving = ref(false)
-const formRef = ref<FormInst | null>(null)
+const showCreate = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const form = ref({ name: '', description: '' })
 
-const defaultForm = () => ({ name: '', description: '' })
-const form = reactive(defaultForm())
-
-const formRules: FormRules = {
-  name: [{ required: true, message: '必填', trigger: 'blur' }],
+function agentForQueue(queueId: string) {
+  return agents.agents.find((a) => a.queueId === queueId)?.name ?? ''
 }
 
-function openCreateModal() {
-  Object.assign(form, defaultForm())
-  modalVisible.value = true
+function fmtDate(ts: number) {
+  return new Date(ts).toLocaleDateString('zh-TW')
 }
 
-async function saveQueue() {
-  await formRef.value?.validate()
-  saving.value = true
+async function deleteQueue(id: string) {
+  if (!confirm('確定要刪除此 Queue？')) return
+  await queues.delete(id)
+}
+
+async function createQueue() {
+  if (!form.value.name) return
+  creating.value = true
+  createError.value = ''
   try {
-    await queuesStore.addQueue({
-      name: form.name,
-      description: form.description || undefined,
-    })
-    modalVisible.value = false
-    message.success('Queue 建立成功')
+    await queues.create({ name: form.value.name, description: form.value.description || undefined })
+    form.value = { name: '', description: '' }
+    showCreate.value = false
+  } catch (e: unknown) {
+    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+    createError.value = msg ?? '建立失敗'
   } finally {
-    saving.value = false
+    creating.value = false
   }
 }
 
-async function handleDelete(queue: Queue) {
-  await queuesStore.removeQueue(queue.id)
-  message.success('Queue 已刪除')
-}
-
-const columns: DataTableColumns<Queue> = [
-  {
-    title: '名稱',
-    key: 'name',
-    render: (row) => h('code', { style: 'font-size: 13px;' }, row.name),
-  },
-  {
-    title: '描述',
-    key: 'description',
-    render: (row) => row.description
-      ? h('span', { style: 'color: #aaa; font-size: 12px;' }, row.description)
-      : h('span', { style: 'color: #555; font-size: 12px;' }, '—'),
-  },
-  {
-    title: 'ID',
-    key: 'id',
-    render: (row) => h('span', { style: 'font-family: monospace; font-size: 11px; color: #666;' }, row.id.slice(0, 8) + '...'),
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 100,
-    render: (row) => h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, {
-      trigger: () => h(NButton, { size: 'tiny', type: 'error' }, { default: () => '刪除' }),
-      default: () => '確認刪除此 Queue？刪除後相關的 Router 和 Agent 綁定將失效。',
-    }),
-  },
-]
+onMounted(() => {
+  queues.fetch()
+  agents.fetch()
+})
 </script>

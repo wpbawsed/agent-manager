@@ -1,54 +1,75 @@
 <template>
-  <div class="auth-page">
-    <n-card title="建立帳號" style="max-width: 400px; margin: 0 auto;">
-      <n-form @submit.prevent="handleRegister">
-        <n-form-item label="Email">
-          <n-input v-model:value="email" type="text" placeholder="your@email.com" />
-        </n-form-item>
-        <n-form-item label="密碼（至少 8 字元）">
-          <n-input v-model:value="password" type="password" placeholder="請輸入密碼" />
-        </n-form-item>
-        <n-alert v-if="errorMsg" type="error" :title="errorMsg" style="margin-bottom: 12px;" />
-        <n-button type="primary" attr-type="submit" block :loading="auth.loading">
-          建立帳號
-        </n-button>
-        <div style="margin-top: 12px; text-align: center;">
-          <router-link to="/login">已有帳號？登入</router-link>
-        </div>
-      </n-form>
-    </n-card>
+  <div class="auth-wrap">
+    <div class="auth-box">
+      <div class="auth-logo">
+        <div class="logo-icon">A</div>
+        <div class="auth-title">Agent Manager</div>
+      </div>
+      <h2 class="auth-heading">建立帳號</h2>
+      <div v-if="error" class="alert alert-error">{{ error }}</div>
+      <div class="form-group">
+        <label class="form-label">Email</label>
+        <input v-model="email" class="form-input" type="email" placeholder="you@example.com" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input v-model="password" class="form-input" type="password" placeholder="••••••••" @keydown.enter="submit" />
+      </div>
+      <button class="btn btn-primary" style="width:100%;" :disabled="loading" @click="submit">
+        {{ loading ? '建立中...' : '建立帳號' }}
+      </button>
+      <p class="auth-footer">
+        已有帳號？<span class="auth-link" @click="router.push('/login')">登入</span>
+      </p>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NCard, NForm, NFormItem, NInput, NButton, NAlert } from 'naive-ui'
 import { useAuthStore } from '@/stores/auth'
 
-const auth = useAuthStore()
 const router = useRouter()
+const auth = useAuthStore()
 const email = ref('')
 const password = ref('')
-const errorMsg = ref('')
+const loading = ref(false)
+const error = ref('')
 
-async function handleRegister() {
-  errorMsg.value = ''
+async function submit() {
+  if (!email.value || !password.value) return
+  loading.value = true
+  error.value = ''
   try {
-    await auth.doRegister(email.value, password.value)
+    await auth.register(email.value, password.value)
     router.push('/agents')
-  } catch (err: any) {
-    errorMsg.value = err?.response?.data?.error ?? '註冊失敗'
+  } catch (e: unknown) {
+    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+    error.value = msg ?? '註冊失敗'
+  } finally {
+    loading.value = false
   }
 }
 </script>
 
 <style scoped>
-.auth-page {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  min-height: 100vh;
-  padding: 24px;
+.auth-wrap {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg);
 }
+.auth-box {
+  width: 380px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 32px;
+}
+.auth-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+.logo-icon {
+  width: 32px; height: 32px; background: var(--accent); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; color: #0d0d0d;
+}
+.auth-title { font-size: 16px; font-weight: 700; }
+.auth-heading { font-size: 20px; font-weight: 700; margin-bottom: 20px; }
+.auth-footer { margin-top: 16px; font-size: 13px; color: var(--text2); text-align: center; }
+.auth-link { color: var(--accent); cursor: pointer; }
+.auth-link:hover { text-decoration: underline; }
 </style>

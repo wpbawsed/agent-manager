@@ -1,30 +1,34 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import { listQueues, createQueue, deleteQueue, type Queue, type CreateQueuePayload } from "@/api/queues";
+import { defineStore } from 'pinia'
+import { queuesApi } from '@/api'
 
-export const useQueuesStore = defineStore("queues", () => {
-  const queues = ref<Queue[]>([]);
-  const loading = ref(false);
+export interface Queue {
+  id: string
+  name: string
+  description?: string
+  ownerId: string
+  createdAt: number
+}
 
-  async function fetchQueues() {
-    loading.value = true;
-    try {
-      queues.value = await listQueues();
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function addQueue(payload: CreateQueuePayload): Promise<Queue> {
-    const queue = await createQueue(payload);
-    queues.value.unshift(queue);
-    return queue;
-  }
-
-  async function removeQueue(id: string) {
-    await deleteQueue(id);
-    queues.value = queues.value.filter((q) => q.id !== id);
-  }
-
-  return { queues, loading, fetchQueues, addQueue, removeQueue };
-});
+export const useQueuesStore = defineStore('queues', {
+  state: () => ({ queues: [] as Queue[], loading: false }),
+  actions: {
+    async fetch() {
+      this.loading = true
+      try {
+        const { data } = await queuesApi.list()
+        this.queues = data
+      } finally {
+        this.loading = false
+      }
+    },
+    async create(payload: { name: string; description?: string }) {
+      const { data } = await queuesApi.create(payload)
+      this.queues.unshift(data)
+      return data
+    },
+    async delete(id: string) {
+      await queuesApi.delete(id)
+      this.queues = this.queues.filter((q) => q.id !== id)
+    },
+  },
+})

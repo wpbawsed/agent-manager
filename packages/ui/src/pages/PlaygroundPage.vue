@@ -1,159 +1,154 @@
 <template>
-  <div style="display: flex; height: calc(100vh - 96px); gap: 16px;">
-    <!-- Left: Chat -->
-    <div style="flex: 1; display: flex; flex-direction: column; border: 1px solid #333; border-radius: 8px; overflow: hidden;">
-      <!-- Agent Info Header -->
-      <div style="padding: 12px 16px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 12px;">
-        <n-tag v-if="agent?.status" :type="agent.status === 'running' ? 'success' : 'default'" size="small">{{ agent.status }}</n-tag>
-        <span style="font-weight: 600;">{{ agent?.name ?? '...' }}</span>
-        <n-button size="tiny" text @click="clearHistory">清除對話</n-button>
+  <div style="padding:24px; max-width:800px;">
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header">
+        <div class="card-title">Playground</div>
+        <div class="card-sub">直接傳送訊息給 Agent，測試輸入/輸出，不走 Webhook 流程</div>
       </div>
-
-      <!-- Messages -->
-      <div ref="messagesRef" style="flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
-        <div v-if="messages.length === 0" style="color: #555; font-size: 13px; text-align: center; margin-top: 60px;">
-          開始和 Agent 對話...
+      <div style="padding:16px;">
+        <div class="form-group">
+          <label class="form-label">Target Agent</label>
+          <select v-model="selectedAgent" class="form-select">
+            <option value="">— Select agent —</option>
+            <option v-for="a in agents.agents" :key="a.id" :value="a.id">{{ a.name }}</option>
+          </select>
         </div>
-        <div
-          v-for="(msg, i) in messages"
-          :key="i"
-          :style="{
-            display: 'flex',
-            justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-          }"
-        >
-          <div
-            :style="{
-              maxWidth: '75%',
-              padding: '10px 14px',
-              borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-              background: msg.role === 'user' ? '#1e3a5f' : '#1a1a2e',
-              color: msg.role === 'user' ? '#bfdbfe' : '#e5e7eb',
-              fontSize: '13px',
-              lineHeight: '1.6',
-              whiteSpace: 'pre-wrap',
-            }"
-          >
-            {{ msg.content }}
-            <span v-if="i === messages.length - 1 && streaming" style="display: inline-block; width: 6px; height: 12px; background: #7c3aed; margin-left: 2px; animation: blink 1s infinite;" />
-          </div>
-        </div>
-      </div>
-
-      <!-- Input Area -->
-      <div style="padding: 12px; border-top: 1px solid #333; display: flex; gap: 8px;">
-        <n-input
-          v-model:value="inputText"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="輸入訊息... (Shift+Enter 換行)"
-          :disabled="streaming"
-          @keydown.enter.exact.prevent="sendMessage"
-        />
-        <n-button
-          type="primary"
-          :loading="streaming"
-          :disabled="!inputText.trim()"
-          style="align-self: flex-end;"
-          @click="sendMessage"
-        >
-          送出
-        </n-button>
       </div>
     </div>
 
-    <!-- Right: Instruction Panel -->
-    <div style="width: 280px; display: flex; flex-direction: column; gap: 12px;">
-      <n-card title="System Prompt" size="small" style="flex: 1;">
-        <div style="font-size: 12px; color: #aaa; white-space: pre-wrap; overflow-y: auto; max-height: 400px;">
-          {{ agent?.instruction || '（未設定 System Prompt）' }}
+    <!-- Chat -->
+    <div class="card">
+      <div ref="logEl" class="chat-log" style="height:400px; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:8px;">
+        <div v-if="!messages.length" class="empty" style="height:100%; display:flex; align-items:center; justify-content:center;">
+          選擇 Agent 並開始傳訊息
         </div>
-      </n-card>
-      <n-card title="對話紀錄" size="small">
-        <div style="font-size: 12px; color: #888;">
-          {{ historyForApi.length / 2 }} 輪對話
+        <div v-for="(m, i) in messages" :key="i" class="chat-msg" :class="m.role">
+          <div class="chat-bubble">
+            <span v-if="m.role === 'assistant'" class="msg-prefix">🤖 Agent</span>
+            <span v-else class="msg-prefix">👤 You</span>
+            <pre class="msg-text">{{ m.content }}</pre>
+          </div>
         </div>
-        <n-button size="tiny" block style="margin-top: 8px;" @click="clearHistory">清除</n-button>
-      </n-card>
+        <div v-if="streaming" class="chat-msg assistant">
+          <div class="chat-bubble">
+            <span class="msg-prefix">🤖 Agent</span>
+            <pre class="msg-text">{{ streamBuf }}<span class="cursor">▌</span></pre>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-row" style="padding:12px 16px; border-top:1px solid var(--border); display:flex; gap:8px;">
+        <textarea
+          v-model="inputText"
+          class="form-input"
+          rows="2"
+          placeholder="Type your message..."
+          style="flex:1; resize:none;"
+          @keydown.enter.exact.prevent="send"
+        />
+        <button class="btn btn-primary" style="align-self:flex-end;" :disabled="!selectedAgent || !inputText.trim() || streaming" @click="send">
+          {{ streaming ? '...' : 'Send' }}
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { NInput, NButton, NTag, NCard } from 'naive-ui'
+import { ref, nextTick, onMounted } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
-import { runPlayground, type PlaygroundMessage } from '@/api/playground'
+import { playgroundStream } from '@/api'
 
-const route = useRoute()
-const agentsStore = useAgentsStore()
+const agents = useAgentsStore()
 
-const agentId = computed(() => route.params.id as string)
-const agent = computed(() => agentsStore.agents.find(a => a.id === agentId.value) ?? null)
-
-onMounted(async () => {
-  if (!agentsStore.agents.length) {
-    await agentsStore.fetchAgents()
-  }
-})
-
-interface Message {
-  role: 'user' | 'assistant'
-  content: string
-}
-
-const messages = ref<Message[]>([])
+const selectedAgent = ref('')
 const inputText = ref('')
+const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
 const streaming = ref(false)
-const messagesRef = ref<HTMLElement | null>(null)
+const streamBuf = ref('')
+const logEl = ref<HTMLElement | null>(null)
 
-const historyForApi = computed((): PlaygroundMessage[] =>
-  messages.value.map(m => ({ role: m.role, content: m.content }))
-)
-
-function clearHistory() {
-  messages.value = []
-}
-
-async function scrollToBottom() {
+async function scrollBottom() {
   await nextTick()
-  if (messagesRef.value) {
-    messagesRef.value.scrollTop = messagesRef.value.scrollHeight
-  }
+  if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
 }
 
-async function sendMessage() {
+async function send() {
   const text = inputText.value.trim()
-  if (!text || streaming.value) return
-
-  inputText.value = ''
+  if (!text || !selectedAgent.value || streaming.value) return
   messages.value.push({ role: 'user', content: text })
-  await scrollToBottom()
+  inputText.value = ''
+  await scrollBottom()
 
-  // Add empty assistant message to fill in streaming
-  const assistantIdx = messages.value.length
-  messages.value.push({ role: 'assistant', content: '' })
   streaming.value = true
+  streamBuf.value = ''
+  let fullResponse = ''
 
   try {
-    const history = historyForApi.value.slice(0, -1) // exclude the empty assistant msg
-    for await (const chunk of runPlayground(agentId.value, text, history.slice(0, -1))) {
-      messages.value[assistantIdx].content += chunk
-      await scrollToBottom()
+    const response = await playgroundStream(selectedAgent.value, text)
+    if (!response.body) throw new Error('No response body')
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      // Handle SSE format: "data: {...}\n\n"
+      const lines = chunk.split('\n').filter((l) => l.startsWith('data: '))
+      for (const line of lines) {
+        const jsonStr = line.slice(6).trim()
+        if (jsonStr === '[DONE]') continue
+        try {
+          const d = JSON.parse(jsonStr)
+          const content = d.content ?? d.text ?? d.delta ?? ''
+          streamBuf.value += content
+          fullResponse += content
+          await scrollBottom()
+        } catch {
+          // raw text chunk
+          streamBuf.value += jsonStr
+          fullResponse += jsonStr
+        }
+      }
     }
-  } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err)
-    messages.value[assistantIdx].content = `[錯誤] ${errorMessage}`
-  } finally {
+
+    messages.value.push({ role: 'assistant', content: fullResponse || streamBuf.value })
+    streamBuf.value = ''
+    streaming.value = false
+    scrollBottom()
+  } catch (err) {
+    messages.value.push({ role: 'assistant', content: '❌ 連線失敗' })
     streaming.value = false
   }
 }
+
+onMounted(() => agents.fetch())
 </script>
 
 <style scoped>
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+.chat-msg { display:flex; flex-direction:column; }
+.chat-msg.user { align-items:flex-end; }
+.chat-msg.assistant { align-items:flex-start; }
+.chat-bubble { max-width:90%; }
+.msg-prefix { font-size:11px; color:var(--text3); display:block; margin-bottom:4px; }
+.chat-msg.user .msg-prefix { text-align:right; }
+.msg-text {
+  margin:0;
+  background:var(--surface2);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:13px;
+  font-family:inherit;
+  color:var(--text);
+  white-space:pre-wrap;
+  word-break:break-word;
 }
+.chat-msg.user .msg-text {
+  background:rgba(110, 231, 183, 0.08);
+  border-color:rgba(110, 231, 183, 0.3);
+}
+.cursor { animation: blink 1s infinite; }
+@keyframes blink { 0%, 100% { opacity:1 } 50% { opacity:0 } }
 </style>

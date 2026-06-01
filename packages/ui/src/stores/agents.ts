@@ -1,79 +1,56 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import {
-  listAgents,
-  getAgent,
-  createAgent,
-  updateAgent,
-  deleteAgent,
-  startAgent,
-  stopAgent,
-  type Agent,
-  type CreateAgentPayload,
-  type UpdateAgentPayload,
-} from "@/api/agents";
+import { defineStore } from 'pinia'
+import { agentsApi } from '@/api'
 
-export const useAgentsStore = defineStore("agents", () => {
-  const agents = ref<Agent[]>([]);
-  const loading = ref(false);
+export interface Agent {
+  id: string
+  name: string
+  description?: string
+  instruction?: string
+  queueId?: string
+  queueName?: string
+  runtimeCmd?: string
+  apiToken: string
+  status: 'stopped' | 'running' | 'error'
+  createdAt: number
+  updatedAt: number
+  liveStatus?: { running: boolean; pid?: number; uptime?: number }
+}
 
-  async function fetchAgents() {
-    loading.value = true;
-    try {
-      agents.value = await listAgents();
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function fetchAgent(id: string): Promise<Agent> {
-    return getAgent(id);
-  }
-
-  async function addAgent(payload: CreateAgentPayload): Promise<Agent> {
-    const agent = await createAgent(payload);
-    agents.value.unshift(agent);
-    return agent;
-  }
-
-  async function editAgent(
-    id: string,
-    payload: UpdateAgentPayload,
-  ): Promise<Agent> {
-    const agent = await updateAgent(id, payload);
-    const idx = agents.value.findIndex((a) => a.id === id);
-    if (idx !== -1) agents.value[idx] = agent;
-    return agent;
-  }
-
-  async function removeAgent(id: string) {
-    await deleteAgent(id);
-    agents.value = agents.value.filter((a) => a.id !== id);
-  }
-
-  async function start(id: string) {
-    const result = await startAgent(id);
-    const idx = agents.value.findIndex((a) => a.id === id);
-    if (idx !== -1) agents.value[idx].status = "running";
-    return result;
-  }
-
-  async function stop(id: string) {
-    const result = await stopAgent(id);
-    const idx = agents.value.findIndex((a) => a.id === id);
-    if (idx !== -1) agents.value[idx].status = "stopped";
-    return result;
-  }
-
-  return {
-    agents,
-    loading,
-    fetchAgents,
-    fetchAgent,
-    addAgent,
-    editAgent,
-    removeAgent,
-    start,
-    stop,
-  };
-});
+export const useAgentsStore = defineStore('agents', {
+  state: () => ({ agents: [] as Agent[], loading: false }),
+  actions: {
+    async fetch() {
+      this.loading = true
+      try {
+        const { data } = await agentsApi.list()
+        this.agents = data
+      } finally {
+        this.loading = false
+      }
+    },
+    async create(payload: Record<string, unknown>) {
+      const { data } = await agentsApi.create(payload)
+      this.agents.unshift(data)
+      return data
+    },
+    async update(id: string, payload: Record<string, unknown>) {
+      const { data } = await agentsApi.update(id, payload)
+      const idx = this.agents.findIndex((a) => a.id === id)
+      if (idx !== -1) this.agents[idx] = { ...this.agents[idx], ...data }
+    },
+    async delete(id: string) {
+      await agentsApi.delete(id)
+      this.agents = this.agents.filter((a) => a.id !== id)
+    },
+    async start(id: string) {
+      await agentsApi.start(id)
+      const a = this.agents.find((a) => a.id === id)
+      if (a) a.status = 'running'
+    },
+    async stop(id: string) {
+      await agentsApi.stop(id)
+      const a = this.agents.find((a) => a.id === id)
+      if (a) a.status = 'stopped'
+    },
+  },
+})

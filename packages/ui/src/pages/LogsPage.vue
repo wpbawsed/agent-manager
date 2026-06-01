@@ -1,195 +1,186 @@
 <template>
-  <div>
-    <n-tabs v-model:value="activeTab" type="line" animated>
-      <!-- Agent Execution Logs Tab -->
-      <n-tab-pane name="agent" tab="Agent 執行日誌">
-        <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center;">
-          <n-select
-            v-model:value="selectedAgentId"
-            :options="agentOptions"
-            placeholder="選擇 Agent"
-            clearable
-            style="width: 220px;"
-          />
-          <n-select
-            v-model:value="selectedLevel"
-            :options="levelOptions"
-            placeholder="日誌等級"
-            clearable
-            style="width: 140px;"
-          />
-          <n-button @click="loadLogs" :loading="logsLoading">查詢</n-button>
-          <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 12px; color: #999;">即時串流</span>
-            <n-switch v-model:value="streamEnabled" @update:value="toggleStream" />
+  <div style="padding:24px;">
+    <!-- Tabs -->
+    <div class="tabs" style="margin-bottom:20px;">
+      <button class="tab" :class="{ active: tab === 'events' }" @click="tab = 'events'">Webhook Events</button>
+      <button class="tab" :class="{ active: tab === 'agent' }" @click="tab = 'agent'">Agent Logs</button>
+    </div>
+
+    <!-- Webhook Events -->
+    <div v-if="tab === 'events'">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Webhook Events</div>
+          <div class="filter-row">
+            <select v-model="filter.brokerId" class="form-select" style="width:160px;" @change="fetchEvents">
+              <option value="">All Brokers</option>
+              <option v-for="b in brokers.brokers" :key="b.id" :value="b.id">{{ b.name }}</option>
+            </select>
+            <select v-model="filter.status" class="form-select" style="width:140px;" @change="fetchEvents">
+              <option value="">All Status</option>
+              <option value="received">received</option>
+              <option value="routed">routed</option>
+              <option value="failed">failed</option>
+            </select>
           </div>
         </div>
+        <div v-if="loadingEvents" class="empty">載入中...</div>
+        <div v-else-if="!events.length" class="empty">無 Webhook 事件</div>
+        <table v-else>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Broker</th>
+              <th>Event Type</th>
+              <th>Status</th>
+              <th>Queue</th>
+              <th>Payload</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in events" :key="e.id">
+              <td style="font-size:12px; color:var(--text3); white-space:nowrap;">{{ fmtTime(e.receivedAt) }}</td>
+              <td style="font-size:13px;">{{ e.brokerName ?? e.brokerId }}</td>
+              <td><code style="font-size:11px; color:var(--accent);">{{ e.eventType }}</code></td>
+              <td><span class="badge" :class="e.status">{{ e.status }}</span></td>
+              <td style="font-size:12px; color:var(--text2);">{{ e.queueName ?? '—' }}</td>
+              <td>
+                <button class="btn btn-ghost btn-sm" @click="showPayload(e)">View</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="events.length" class="card-footer">
+          <button class="btn btn-ghost btn-sm" @click="loadMoreEvents">Load more</button>
+        </div>
+      </div>
+    </div>
 
-        <!-- SSE Stream Banner -->
-        <div v-if="streamEnabled && streamAgentId" style="margin-bottom: 8px;">
-          <n-alert type="info" :title="`串流中：${agentName(streamAgentId)}`" closable @close="stopStream">
-            {{ streamLines.length }} 行即時日誌
-          </n-alert>
-          <div
-            ref="streamContainerRef"
-            style="font-family: monospace; font-size: 12px; height: 200px; overflow-y: auto; background: #1a1a2e; padding: 10px; border-radius: 4px; margin-top: 8px;"
-          >
-            <div v-for="(line, i) in streamLines" :key="i" :style="{ color: line.level === 'error' ? '#ff6b6b' : '#a8ff78' }">
-              <span style="color: #555; margin-right: 6px;">{{ formatTime(line.ts) }}</span>{{ line.msg }}
-            </div>
+    <!-- Agent Logs -->
+    <div v-if="tab === 'agent'">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Agent Execution Logs</div>
+          <div class="filter-row">
+            <select v-model="filter.agentId" class="form-select" style="width:160px;" @change="fetchAgentLogs">
+              <option value="">All Agents</option>
+              <option v-for="a in agents.agents" :key="a.id" :value="a.id">{{ a.name }}</option>
+            </select>
+            <select v-model="filter.level" class="form-select" style="width:120px;" @change="fetchAgentLogs">
+              <option value="">All Levels</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
           </div>
         </div>
+        <div v-if="loadingAgent" class="empty">載入中...</div>
+        <div v-else-if="!agentLogs.length" class="empty">無 Agent Log</div>
+        <div v-else class="log-stream">
+          <div v-for="l in agentLogs" :key="l.id" class="log-line" :class="l.level">
+            <span class="log-ts">{{ fmtTime(l.createdAt) }}</span>
+            <span class="log-level" :class="l.level">{{ l.level }}</span>
+            <span class="log-agent">{{ l.agentName ?? l.agentId }}</span>
+            <span class="log-msg">{{ l.message }}</span>
+          </div>
+        </div>
+        <div v-if="agentLogs.length" class="card-footer">
+          <button class="btn btn-ghost btn-sm" @click="loadMoreAgent">Load more</button>
+        </div>
+      </div>
+    </div>
 
-        <!-- History Table -->
-        <n-data-table
-          :columns="agentLogColumns"
-          :data="filteredLogs"
-          :loading="logsLoading"
-          size="small"
-          max-height="400"
-        />
-      </n-tab-pane>
-
-      <!-- Event Logs Tab (D1 — future) -->
-      <n-tab-pane name="events" tab="事件日誌（Workers）">
-        <n-empty description="事件日誌由 Cloudflare Workers 寫入 D1，尚未支援查詢介面" />
-      </n-tab-pane>
-    </n-tabs>
+    <!-- Payload Modal -->
+    <div v-if="selectedEvent" class="modal-overlay" @click.self="selectedEvent = null">
+      <div class="modal" style="max-width:600px;">
+        <div class="modal-header">
+          <div class="modal-title">Event Payload</div>
+          <button class="modal-close" @click="selectedEvent = null">✕</button>
+        </div>
+        <div class="modal-body">
+          <pre style="overflow:auto; max-height:400px; font-size:12px; color:var(--text);">{{ JSON.stringify(selectedEvent.payload, null, 2) }}</pre>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onUnmounted, h } from 'vue'
-import {
-  NTabs, NTabPane, NDataTable, NSelect, NButton, NSwitch,
-  NAlert, NEmpty,
-  type DataTableColumns
-} from 'naive-ui'
+import { ref, onMounted } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
-import { listAgentLogs, type AgentLog } from '@/api/logs'
-import { API_BASE_URL } from '@/api/config'
+import { useBrokersStore } from '@/stores/brokers'
+import { logsApi } from '@/api'
 
-const agentsStore = useAgentsStore()
-agentsStore.fetchAgents()
+const agents = useAgentsStore()
+const brokers = useBrokersStore()
 
-const activeTab = ref('agent')
-const selectedAgentId = ref<string | null>(null)
-const selectedLevel = ref<string | null>(null)
-const logsLoading = ref(false)
-const allLogs = ref<AgentLog[]>([])
+const tab = ref<'events' | 'agent'>('events')
+const events = ref<any[]>([])
+const agentLogs = ref<any[]>([])
+const loadingEvents = ref(false)
+const loadingAgent = ref(false)
+const selectedEvent = ref<any>(null)
 
-const agentOptions = computed(() =>
-  agentsStore.agents.map(a => ({ label: a.name, value: a.id }))
-)
-const levelOptions = [
-  { label: 'info', value: 'info' },
-  { label: 'error', value: 'error' },
-]
+const filter = ref({ brokerId: '', status: '', agentId: '', level: '' })
+let eventsPage = 0, agentPage = 0
 
-function agentName(id: string) {
-  return agentsStore.agents.find(a => a.id === id)?.name ?? id.slice(0, 8)
+function fmtTime(ts: number | string) {
+  return new Date(ts).toLocaleTimeString('zh-TW', { hour12: false }) + ' ' +
+    new Date(ts).toLocaleDateString('zh-TW')
 }
 
-async function loadLogs() {
-  logsLoading.value = true
+function showPayload(e: any) { selectedEvent.value = e }
+
+async function fetchEvents() {
+  eventsPage = 0
+  loadingEvents.value = true
   try {
-    allLogs.value = await listAgentLogs({
-      agentId: selectedAgentId.value ?? undefined,
-      limit: 500,
-    })
-  } finally {
-    logsLoading.value = false
-  }
+    const res = await logsApi.webhookEvents({ brokerId: filter.value.brokerId || undefined, status: filter.value.status || undefined, limit: 30, offset: 0 })
+    events.value = res.data.data ?? res.data
+    eventsPage = 1
+  } catch { events.value = [] }
+  finally { loadingEvents.value = false }
 }
 
-const filteredLogs = computed(() => {
-  if (!selectedLevel.value) return allLogs.value
-  return allLogs.value.filter(l => l.level === selectedLevel.value)
+async function loadMoreEvents() {
+  const res = await logsApi.webhookEvents({ brokerId: filter.value.brokerId || undefined, status: filter.value.status || undefined, limit: 30, offset: eventsPage * 30 })
+  events.value.push(...(res.data.data ?? res.data))
+  eventsPage++
+}
+
+async function fetchAgentLogs() {
+  agentPage = 0
+  loadingAgent.value = true
+  try {
+    const res = await logsApi.agentLogs({ agentId: filter.value.agentId || undefined, level: filter.value.level || undefined, limit: 50, offset: 0 })
+    agentLogs.value = res.data.data ?? res.data
+    agentPage = 1
+  } catch { agentLogs.value = [] }
+  finally { loadingAgent.value = false }
+}
+
+async function loadMoreAgent() {
+  const res = await logsApi.agentLogs({ agentId: filter.value.agentId || undefined, level: filter.value.level || undefined, limit: 50, offset: agentPage * 50 })
+  agentLogs.value.push(...(res.data.data ?? res.data))
+  agentPage++
+}
+
+onMounted(async () => {
+  await Promise.all([agents.fetch(), brokers.fetch()])
+  fetchEvents()
 })
-
-// Load on mount
-loadLogs()
-
-// --- SSE Stream ---
-const streamEnabled = ref(false)
-const streamAgentId = ref<string | null>(null)
-const streamLines = ref<{ level: string; msg: string; ts: number }[]>([])
-const streamContainerRef = ref<HTMLElement | null>(null)
-let eventSource: EventSource | null = null
-
-function toggleStream(val: boolean) {
-  if (val) {
-    if (!selectedAgentId.value) {
-      streamEnabled.value = false
-      return
-    }
-    startStream(selectedAgentId.value)
-  } else {
-    stopStream()
-  }
-}
-
-function startStream(agentId: string) {
-  stopStream()
-  streamAgentId.value = agentId
-  streamLines.value = []
-  const token = localStorage.getItem('token')
-  eventSource = new EventSource(`${API_BASE_URL}/agents/${agentId}/logs/stream?token=${encodeURIComponent(token ?? '')}`)
-  eventSource.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data)
-      streamLines.value.push({ level: data.level ?? 'info', msg: data.message ?? e.data, ts: data.timestamp ?? Date.now() })
-      nextTick(() => {
-        if (streamContainerRef.value) {
-          streamContainerRef.value.scrollTop = streamContainerRef.value.scrollHeight
-        }
-      })
-    } catch {
-      streamLines.value.push({ level: 'info', msg: e.data, ts: Date.now() })
-    }
-  }
-}
-
-function stopStream() {
-  eventSource?.close()
-  eventSource = null
-  streamAgentId.value = null
-  streamEnabled.value = false
-}
-
-onUnmounted(() => {
-  eventSource?.close()
-})
-
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString()
-}
-
-const agentLogColumns: DataTableColumns<AgentLog> = [
-  {
-    title: '時間',
-    key: 'createdAt',
-    width: 130,
-    render: (row) => formatTime(row.createdAt),
-  },
-  {
-    title: 'Agent',
-    key: 'agentId',
-    width: 140,
-    render: (row) => agentName(row.agentId),
-  },
-  {
-    title: '等級',
-    key: 'level',
-    width: 70,
-    render: (row) => h('span', {
-      style: { color: row.level === 'error' ? '#ff6b6b' : '#86efac', fontSize: '12px' }
-    }, row.level),
-  },
-  {
-    title: '訊息',
-    key: 'message',
-    ellipsis: { tooltip: true },
-  },
-]
 </script>
+
+<style scoped>
+.filter-row { display:flex; gap:8px; align-items:center; }
+.log-stream { padding: 12px 16px; }
+.log-line { display:flex; gap:12px; font-size:12px; padding:4px 0; border-bottom:1px solid var(--border); }
+.log-ts { color:var(--text3); min-width:140px; }
+.log-level { min-width:40px; font-weight:600; }
+.log-level.info { color:var(--blue); }
+.log-level.warn { color:var(--yellow); }
+.log-level.error { color:var(--red); }
+.log-agent { color:var(--accent); min-width:120px; }
+.log-msg { color:var(--text); flex:1; }
+.card-footer { padding:12px 16px; border-top:1px solid var(--border); text-align:center; }
+</style>

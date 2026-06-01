@@ -1,72 +1,53 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import {
-  listBrokers,
-  createBroker,
-  updateBroker,
-  deleteBroker,
-  activateBroker,
-  deactivateBroker,
-  type Broker,
-  type CreateBrokerPayload,
-} from "@/api/brokers";
+import { defineStore } from 'pinia'
+import { brokersApi } from '@/api'
 
-export const useBrokersStore = defineStore("brokers", () => {
-  const brokers = ref<Broker[]>([]);
-  const loading = ref(false);
+export interface Broker {
+  id: string
+  name: string
+  type: string
+  config: string
+  webhookPath: string
+  requiredVars?: string
+  status: 'active' | 'inactive' | 'error'
+  createdAt: number
+  updatedAt: number
+}
 
-  async function fetchBrokers() {
-    loading.value = true;
-    try {
-      brokers.value = await listBrokers();
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function addBroker(payload: CreateBrokerPayload): Promise<Broker> {
-    const broker = await createBroker(payload);
-    brokers.value.unshift(broker);
-    return broker;
-  }
-
-  async function removeBroker(id: string) {
-    await deleteBroker(id);
-    brokers.value = brokers.value.filter((b) => b.id !== id);
-  }
-
-  async function activate(id: string) {
-    const broker = await activateBroker(id);
-    const idx = brokers.value.findIndex((b) => b.id === id);
-    if (idx !== -1) brokers.value[idx] = broker;
-    return broker;
-  }
-
-  async function deactivate(id: string) {
-    const broker = await deactivateBroker(id);
-    const idx = brokers.value.findIndex((b) => b.id === id);
-    if (idx !== -1) brokers.value[idx] = broker;
-    return broker;
-  }
-
-  async function patchBroker(
-    id: string,
-    patch: { name?: string; config?: Record<string, string> },
-  ) {
-    const broker = await updateBroker(id, patch);
-    const idx = brokers.value.findIndex((b) => b.id === id);
-    if (idx !== -1) brokers.value[idx] = broker;
-    return broker;
-  }
-
-  return {
-    brokers,
-    loading,
-    fetchBrokers,
-    addBroker,
-    removeBroker,
-    activate,
-    deactivate,
-    patchBroker,
-  };
-});
+export const useBrokersStore = defineStore('brokers', {
+  state: () => ({ brokers: [] as Broker[], loading: false }),
+  actions: {
+    async fetch() {
+      this.loading = true
+      try {
+        const { data } = await brokersApi.list()
+        this.brokers = data
+      } finally {
+        this.loading = false
+      }
+    },
+    async create(payload: Record<string, unknown>) {
+      const { data } = await brokersApi.create(payload)
+      this.brokers.unshift(data)
+      return data
+    },
+    async update(id: string, payload: Record<string, unknown>) {
+      const { data } = await brokersApi.update(id, payload)
+      const idx = this.brokers.findIndex((b) => b.id === id)
+      if (idx !== -1) this.brokers[idx] = { ...this.brokers[idx], ...data }
+    },
+    async delete(id: string) {
+      await brokersApi.delete(id)
+      this.brokers = this.brokers.filter((b) => b.id !== id)
+    },
+    async activate(id: string) {
+      await brokersApi.activate(id)
+      const b = this.brokers.find((b) => b.id === id)
+      if (b) b.status = 'active'
+    },
+    async deactivate(id: string) {
+      await brokersApi.deactivate(id)
+      const b = this.brokers.find((b) => b.id === id)
+      if (b) b.status = 'inactive'
+    },
+  },
+})

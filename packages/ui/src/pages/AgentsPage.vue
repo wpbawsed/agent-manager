@@ -1,187 +1,185 @@
 <template>
-  <div>
-    <!-- Header Bar -->
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-      <n-space align="center">
-        <n-statistic label="總計" :value="agentsStore.agents.length" />
-        <n-statistic
-          label="執行中"
-          :value="agentsStore.agents.filter(a => a.status === 'running').length"
-        />
-      </n-space>
-      <n-button type="primary" @click="openCreateDrawer">
-        + 新增 Agent
-      </n-button>
+  <div style="padding:24px;">
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Total Agents</div>
+        <div class="stat-value">{{ agents.agents.length }}</div>
+        <div class="stat-sub">all agents</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Running</div>
+        <div class="stat-value green">{{ runningCount }}</div>
+        <div class="stat-sub">active processes</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Stopped</div>
+        <div class="stat-value">{{ stoppedCount }}</div>
+        <div class="stat-sub">idle agents</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Error</div>
+        <div class="stat-value red">{{ errorCount }}</div>
+        <div class="stat-sub">needs attention</div>
+      </div>
     </div>
 
-    <!-- Agent Table -->
-    <n-data-table
-      :columns="columns"
-      :data="agentsStore.agents"
-      :loading="agentsStore.loading"
-      :row-key="(row: Agent) => row.id"
-      size="small"
-    />
+    <!-- Table -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">All Agents</div>
+          <div class="card-sub">每個 Agent 綁定一個 Queue，收到任務後自動執行</div>
+        </div>
+        <button class="btn btn-primary btn-sm" @click="showCreate = true">+ New Agent</button>
+      </div>
+      <div v-if="agents.loading" class="empty">載入中...</div>
+      <div v-else-if="!agents.agents.length" class="empty">尚無 Agent，點擊 + New Agent 建立</div>
+      <table v-else>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Queue</th>
+            <th>Status</th>
+            <th>Instruction</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="a in agents.agents" :key="a.id">
+            <td>
+              <div style="font-weight:500;">{{ a.name }}</div>
+              <div class="agent-id">{{ a.id }}</div>
+            </td>
+            <td>
+              <span v-if="queueName(a.queueId)" class="queue-tag">{{ queueName(a.queueId) }}</span>
+              <span v-else style="color:var(--text3); font-size:12px;">—</span>
+            </td>
+            <td><span class="badge" :class="a.status">{{ a.status }}</span></td>
+            <td>
+              <div class="instruction-preview">{{ a.instruction || '（未設定 instruction）' }}</div>
+            </td>
+            <td>
+              <div class="action-group">
+                <button
+                  v-if="a.status !== 'running'"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="starting === a.id"
+                  @click="startAgent(a.id)"
+                >▷ Start</button>
+                <button
+                  v-else
+                  class="btn btn-ghost btn-sm"
+                  :disabled="stopping === a.id"
+                  @click="stopAgent(a.id)"
+                >⏹ Stop</button>
+                <button class="btn btn-danger btn-sm" @click="deleteAgent(a.id)">Delete</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
-    <!-- Create Drawer -->
-    <n-drawer v-model:show="drawerVisible" :width="520" placement="right">
-      <n-drawer-content title="新增 Agent" closable>
-        <n-form ref="formRef" :model="form" :rules="formRules" label-placement="top">
-          <n-form-item label="名稱" path="name">
-            <n-input v-model:value="form.name" placeholder="my-agent" />
-          </n-form-item>
-          <n-form-item label="Queue（選填，啟動後從此 Queue 接收任務）" path="queueId">
-            <n-select
-              v-model:value="form.queueId"
-              :options="queueOptions"
-              clearable
-              placeholder="選擇 Queue"
-            />
-          </n-form-item>
-          <n-form-item label="Instruction（選填）" path="instruction">
-            <n-input
-              v-model:value="form.instruction"
-              type="textarea"
-              placeholder="你是一個全端開發 Agent，收到 Jira 任務後自動實作並發 PR..."
-              :autosize="{ minRows: 4, maxRows: 8 }"
-            />
-          </n-form-item>
-        </n-form>
-        <template #footer>
-          <n-space justify="end">
-            <n-button @click="drawerVisible = false">取消</n-button>
-            <n-button type="primary" :loading="saving" @click="saveAgent">建立</n-button>
-          </n-space>
-        </template>
-      </n-drawer-content>
-    </n-drawer>
+    <!-- New Agent Modal -->
+    <div v-if="showCreate" class="modal-overlay" @click.self="showCreate = false">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">New Agent</div>
+          <button class="modal-close" @click="showCreate = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="createError" class="alert alert-error">{{ createError }}</div>
+          <div class="form-group">
+            <label class="form-label">Name *</label>
+            <input v-model="form.name" class="form-input" placeholder="jira-claude-cli-agent" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Queue (optional)</label>
+            <select v-model="form.queueId" class="form-select">
+              <option value="">— Select queue —</option>
+              <option v-for="q in queues.queues" :key="q.id" :value="q.id">{{ q.name }}</option>
+            </select>
+            <div class="form-hint">Agent 啟動後監聽此 Queue 的任務</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Instruction (optional)</label>
+            <textarea v-model="form.instruction" class="form-textarea" placeholder="你是一個 Jira 自動化助理，收到 issue 後..." />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+          <button class="btn btn-primary" :disabled="creating" @click="createAgent">
+            {{ creating ? '建立中...' : 'Create Agent' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, h } from 'vue'
-import { useRouter } from 'vue-router'
-import {
-  NDataTable, NButton, NDrawer, NDrawerContent, NForm, NFormItem,
-  NInput, NSelect, NSpace, NStatistic,
-  NPopconfirm, NTag, NBadge,
-  type DataTableColumns, type FormInst, type FormRules
-} from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
 import { useAgentsStore } from '@/stores/agents'
 import { useQueuesStore } from '@/stores/queues'
-import type { Agent } from '@/api/agents'
 
-const router = useRouter()
-const agentsStore = useAgentsStore()
-const queuesStore = useQueuesStore()
-agentsStore.fetchAgents()
-queuesStore.fetchQueues()
+const agents = useAgentsStore()
+const queues = useQueuesStore()
 
-// --- Create Drawer State ---
-const drawerVisible = ref(false)
-const saving = ref(false)
-const formRef = ref<FormInst | null>(null)
+const showCreate = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const starting = ref('')
+const stopping = ref('')
 
-const queueOptions = computed(() =>
-  queuesStore.queues.map(q => ({ label: q.name, value: q.id }))
-)
+const form = ref({ name: '', queueId: '', instruction: '' })
 
-const defaultForm = () => ({ name: '', queueId: null as string | null, instruction: '' })
-const form = reactive(defaultForm())
+const runningCount = computed(() => agents.agents.filter((a) => a.status === 'running').length)
+const stoppedCount = computed(() => agents.agents.filter((a) => a.status === 'stopped').length)
+const errorCount   = computed(() => agents.agents.filter((a) => a.status === 'error').length)
 
-const formRules: FormRules = {
-  name: [{ required: true, message: '必填', trigger: 'blur' }],
+function queueName(queueId?: string) {
+  if (!queueId) return ''
+  return queues.queues.find((q) => q.id === queueId)?.name ?? queueId.slice(0, 8)
 }
 
-function openCreateDrawer() {
-  Object.assign(form, defaultForm())
-  drawerVisible.value = true
+async function startAgent(id: string) {
+  starting.value = id
+  try { await agents.start(id) } catch { /* ignore */ } finally { starting.value = '' }
 }
 
-async function saveAgent() {
-  await formRef.value?.validate()
-  saving.value = true
+async function stopAgent(id: string) {
+  stopping.value = id
+  try { await agents.stop(id) } catch { /* ignore */ } finally { stopping.value = '' }
+}
+
+async function deleteAgent(id: string) {
+  if (!confirm('確定要刪除此 Agent？')) return
+  await agents.delete(id)
+}
+
+async function createAgent() {
+  if (!form.value.name) return
+  creating.value = true
+  createError.value = ''
   try {
-    await agentsStore.addAgent({
-      name: form.name,
-      queueId: form.queueId || undefined,
-      instruction: form.instruction || undefined,
+    await agents.create({
+      name: form.value.name,
+      queueId: form.value.queueId || undefined,
+      instruction: form.value.instruction || undefined,
     })
-    drawerVisible.value = false
+    form.value = { name: '', queueId: '', instruction: '' }
+    showCreate.value = false
+  } catch (e: unknown) {
+    const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+    createError.value = msg ?? '建立失敗'
   } finally {
-    saving.value = false
+    creating.value = false
   }
 }
 
-// --- Start / Stop ---
-const actionLoading = reactive<Record<string, boolean>>({})
-
-async function handleStart(agent: Agent) {
-  actionLoading[agent.id] = true
-  try { await agentsStore.start(agent.id) } finally { actionLoading[agent.id] = false }
-}
-
-async function handleStop(agent: Agent) {
-  actionLoading[agent.id] = true
-  try { await agentsStore.stop(agent.id) } finally { actionLoading[agent.id] = false }
-}
-
-// --- Status Badge ---
-function statusType(status: string): 'success' | 'error' | 'warning' | 'default' {
-  if (status === 'running') return 'success'
-  if (status === 'error') return 'error'
-  return 'default'
-}
-
-// --- Table Columns ---
-const columns: DataTableColumns<Agent> = [
-  {
-    title: '名稱',
-    key: 'name',
-    render: (row) => h('strong', row.name),
-  },
-  {
-    title: 'Queue',
-    key: 'queueId',
-    width: 140,
-    render: (row) => {
-      const q = queuesStore.queues.find(q => q.id === row.queueId)
-      return q ? h(NTag, { size: 'small', bordered: false, type: 'info' }, { default: () => q.name }) : h('span', { style: 'color:#555' }, '—')
-    },
-  },
-  {
-    title: '狀態',
-    key: 'status',
-    width: 90,
-    render: (row) => h(NBadge, { type: statusType(row.status), dot: true, offset: [4, 0] }, { default: () => row.status }),
-  },
-  {
-    title: 'Instruction',
-    key: 'instruction',
-    ellipsis: true,
-    render: (row) => row.instruction ? h('span', { style: 'color:#aaa;font-size:12px' }, row.instruction.slice(0, 60) + (row.instruction.length > 60 ? '…' : '')) : '—',
-  },
-  {
-    title: '操作',
-    key: 'actions',
-    width: 150,
-    render: (row) => h(NSpace, { size: 'small' }, {
-      default: () => [
-        row.status === 'running'
-          ? h(NPopconfirm, { onPositiveClick: () => handleStop(row) }, {
-              trigger: () => h(NButton, { size: 'tiny', type: 'warning', loading: actionLoading[row.id] }, { default: () => '停止' }),
-              default: () => '確認停止此 Agent？',
-            })
-          : h(NButton, {
-              size: 'tiny', type: 'primary', loading: actionLoading[row.id],
-              onClick: () => handleStart(row),
-            }, { default: () => '啟動' }),
-        h(NButton, {
-          size: 'tiny', secondary: true,
-          onClick: () => router.push(`/agents/${row.id}/detail`),
-        }, { default: () => '詳細' }),
-      ],
-    }),
-  },
-]
+onMounted(() => {
+  agents.fetch()
+  queues.fetch()
+})
 </script>
