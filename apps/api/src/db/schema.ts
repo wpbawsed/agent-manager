@@ -24,8 +24,11 @@ export const queues = pgTable("queues", {
 });
 
 // ── agents ─────────────────────────────────────────────────────────────────
-// Generic worker that consumes from one queue. All agents run the same code.
-// Create by selecting a queue + writing an instruction.
+// Registry entry for a worker that consumes from one queue.
+// type=local  → runs on the user's machine (Claude Code CLI + claude channel);
+//               the agent self-reports via /internal/agents/:id/* push APIs.
+// type=cloud  → deployed to Cloudflare Sandbox by the manager; the deployed
+//               code has the push calls built in.
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id")
@@ -35,11 +38,30 @@ export const agents = pgTable("agents", {
   description: text("description"),
   instruction: text("instruction"),
   queueId: text("queue_id").references(() => queues.id),  // 1:1, nullable until assigned
-  runtimeCmd: text("runtime_cmd"),   // command to start the worker process
+  runtimeCmd: text("runtime_cmd"),   // command to start the worker process (cloud only)
+  type: text("type").notNull().default("local"),          // local | cloud
+  endpoint: text("endpoint"),        // optional URL of a local agent (informational)
   apiToken: text("api_token").unique().notNull(),
   status: text("status").notNull().default("stopped"), // stopped | running | error
+  lastHeartbeatAt: bigint("last_heartbeat_at", { mode: "number" }), // last push from the agent
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+// ── agent_metrics ──────────────────────────────────────────────────────────
+// Time-series snapshots pushed by agents via POST /internal/agents/:id/metrics.
+export const agentMetrics = pgTable("agent_metrics", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  ownerId: text("owner_id").notNull(),
+  cpuPercent: integer("cpu_percent"),
+  memoryMb: integer("memory_mb"),
+  uptimeSeconds: integer("uptime_seconds"),
+  processedCount: integer("processed_count"),
+  errorCount: integer("error_count"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 // ── brokers ────────────────────────────────────────────────────────────────

@@ -64,46 +64,6 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // POST /internal/node-agent/status
-  // Called by Node Agent daemon when an agent process exits
-  app.post<{
-    Body: {
-      agentId: string;
-      status: "stopped" | "crashed";
-      exitCode: number | null;
-    };
-  }>(
-    "/node-agent/status",
-    {
-      schema: {
-        body: {
-          type: "object",
-          required: ["agentId", "status"],
-          properties: {
-            agentId: { type: "string" },
-            status: { type: "string", enum: ["stopped", "crashed"] },
-            exitCode: { type: ["number", "null"] },
-          },
-        },
-      },
-    },
-    async (req, reply) => {
-      const { agentId, status } = req.body;
-      const dbStatus = status === "crashed" ? "error" : "stopped";
-
-      await app.db
-        .update(agents)
-        .set({ status: dbStatus, updatedAt: Date.now() })
-        .where(eq(agents.id, agentId));
-
-      app.log.info(
-        { agentId, status: dbStatus },
-        "Agent status updated from node-agent callback",
-      );
-      return reply.code(200).send({ ok: true });
-    },
-  );
-
   // POST /internal/agent-heartbeat
   // Called by BullMQConsumer (and other SDK consumers) every 30s to report liveness.
   app.post<{
@@ -147,7 +107,7 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
 
       await app.db
         .update(agents)
-        .set({ status: "running", updatedAt: Date.now() })
+        .set({ status: "running", lastHeartbeatAt: Date.now(), updatedAt: Date.now() })
         .where(eq(agents.id, agent_id));
 
       return reply.code(200).send({ ok: true });

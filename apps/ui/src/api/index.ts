@@ -42,6 +42,7 @@ export const agentsApi = {
   delete: (id: string) => api.delete(`/agents/${id}`),
   start: (id: string) => api.post(`/agents/${id}/start`),
   stop: (id: string) => api.post(`/agents/${id}/stop`),
+  integration: (id: string) => api.get(`/agents/${id}/integration`),
 }
 
 // ── Queues ──

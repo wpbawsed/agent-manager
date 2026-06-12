@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-manager-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 10
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }]
+  },
+  "migrations": [{ "new_sqlite_classes": ["Sandbox"], "tag": "v1" }]
+  // Secrets (set via `wrangler secret put`):
+  //   SANDBOX_INTERNAL_TOKEN — shared secret with the Fastify API
+  //   ANTHROPIC_API_KEY      — injected into every agent runner
+}
