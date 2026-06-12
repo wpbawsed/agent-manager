@@ -61,6 +61,12 @@ export default {
         }
 
         case "start": {
+          if (!env.ANTHROPIC_API_KEY) {
+            return json(
+              { error: "ANTHROPIC_API_KEY secret not configured on sandbox-worker" },
+              500,
+            );
+          }
           const body = (await req.json().catch(() => ({}))) as {
             cmd?: string;
             env?: Record<string, string>;

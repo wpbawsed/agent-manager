@@ -146,6 +146,9 @@ export async function createAgent(db: DB, input: CreateAgentInput): Promise<Crea
     instruction: input.instruction ?? `# ${input.name}\n`,
     env: cloudAgentEnv(agent, queueName ?? `broker-${id}`),
   });
+  if (!init.ok) {
+    console.error(`Cloud agent ${id} sandbox init failed:`, init.error, init.data ?? "");
+  }
   return {
     agent: withOnline(agent),
     integration: null,

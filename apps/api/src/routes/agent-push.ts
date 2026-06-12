@@ -10,6 +10,14 @@ const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
 const RATE_LIMIT_PER_MIN = Number(process.env.PUSH_RATE_LIMIT_PER_MIN) || 120;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
+// Drop expired buckets so deleted agents don't accumulate entries forever.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets) {
+    if (now >= bucket.resetAt) rateBuckets.delete(key);
+  }
+}, 300_000).unref();
+
 function rateLimited(agentId: string): boolean {
   const now = Date.now();
   const bucket = rateBuckets.get(agentId);
