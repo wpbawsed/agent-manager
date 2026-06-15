@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia'
 import { agentsApi } from '@/api'
 
+export interface AgentIntegration {
+  agentId: string
+  apiToken: string
+  managerUrl: string
+  endpoints: { heartbeat: string; metrics: string; logs: string }
+  snippet: string
+  files: Record<string, string>
+}
+
 export interface Agent {
   id: string
   name: string
@@ -9,11 +18,19 @@ export interface Agent {
   queueId?: string
   queueName?: string
   runtimeCmd?: string
+  type: 'local' | 'cloud'
+  endpoint?: string
   apiToken: string
   status: 'stopped' | 'running' | 'error'
+  online: boolean
+  lastHeartbeatAt?: number
   createdAt: number
   updatedAt: number
-  liveStatus?: { running: boolean; pid?: number; uptime?: number }
+}
+
+export type CreatedAgent = Agent & {
+  integration: AgentIntegration | null
+  deploy: { ok: boolean; error?: string } | null
 }
 
 export const useAgentsStore = defineStore('agents', {
@@ -28,9 +45,14 @@ export const useAgentsStore = defineStore('agents', {
         this.loading = false
       }
     },
-    async create(payload: Record<string, unknown>) {
+    async create(payload: Record<string, unknown>): Promise<CreatedAgent> {
       const { data } = await agentsApi.create(payload)
-      this.agents.unshift(data)
+      const { integration, deploy, ...agent } = data as CreatedAgent
+      this.agents.unshift(agent as Agent)
+      return data
+    },
+    async integration(id: string): Promise<AgentIntegration> {
+      const { data } = await agentsApi.integration(id)
       return data
     },
     async update(id: string, payload: Record<string, unknown>) {

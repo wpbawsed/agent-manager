@@ -67,6 +67,9 @@ async function start() {
   await app.register((await import("./routes/internal.js")).default, {
     prefix: "/internal",
   });
+  await app.register((await import("./routes/agent-push.js")).default, {
+    prefix: "/internal/agents",
+  });
 
   // Health check
   app.get("/health", async () => ({ status: "ok", ts: Date.now() }));

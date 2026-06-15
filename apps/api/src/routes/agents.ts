@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import * as http from "node:http";
 import {
   createAgent,
   listAgents,
@@ -8,13 +7,14 @@ import {
   deleteAgent,
   startAgent,
   stopAgent,
-  getAgentNodeStatus,
+  getAgentIntegration,
 } from "../services/agents.js";
-
-const NODE_AGENT_URL = process.env.NODE_AGENT_URL || "http://127.0.0.1:9090";
 
 export default async function agentsRoutes(app: FastifyInstance) {
   // POST /api/agents — Create agent
+  // type=local → response includes `integration` (push API endpoints, token,
+  //              ready-to-run source files for the user's machine)
+  // type=cloud → response includes `deploy` (Cloudflare Sandbox init result)
   app.post<{
     Body: {
       name: string;
@@ -22,6 +22,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
       instruction?: string;
       queueId?: string;
       runtimeCmd?: string;
+      type?: "local" | "cloud";
+      endpoint?: string;
     };
   }>(
     "/",
@@ -36,6 +38,8 @@ export default async function agentsRoutes(app: FastifyInstance) {
             instruction: { type: "string" },
             queueId:     { type: "string" },
             runtimeCmd:  { type: "string" },
+            type:        { type: "string", enum: ["local", "cloud"] },
+            endpoint:    { type: "string" },
           },
         },
       },
@@ -43,15 +47,19 @@ export default async function agentsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const user = req.user as { sub: string };
-      const agent = await createAgent(app.db, {
+      const result = await createAgent(app.db, {
         ...req.body,
         ownerId: user.sub,
       });
-      return reply.code(201).send(agent);
+      return reply.code(201).send({
+        ...result.agent,
+        integration: result.integration,
+        deploy: result.deploy,
+      });
     },
   );
 
-  // GET /api/agents — List agents
+  // GET /api/agents — List agents (each row carries computed `online`)
   app.get("/", { preHandler: [app.authenticate] }, async (req) => {
     const user = req.user as { sub: string };
     return listAgents(app.db, user.sub);
@@ -65,14 +73,23 @@ export default async function agentsRoutes(app: FastifyInstance) {
       const user = req.user as { sub: string };
       const agent = await getAgent(app.db, req.params.id, user.sub);
       if (!agent) return reply.code(404).send({ error: "Agent not found" });
+      return agent;
+    },
+  );
 
-      // Enrich with live node-agent status (optional, best-effort)
-      try {
-        const live = await getAgentNodeStatus(req.params.id);
-        return { ...agent, liveStatus: live };
-      } catch {
-        return agent;
+  // GET /api/agents/:id/integration — Re-issue onboarding material (local only)
+  app.get<{ Params: { id: string } }>(
+    "/:id/integration",
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const user = req.user as { sub: string };
+      const integration = await getAgentIntegration(app.db, req.params.id, user.sub);
+      if (!integration) {
+        return reply
+          .code(404)
+          .send({ error: "Agent not found or not a local agent" });
       }
+      return integration;
     },
   );
 
@@ -105,7 +122,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     },
   );
 
-  // POST /api/agents/:id/start — Start agent process
+  // POST /api/agents/:id/start — Deploy/start a cloud agent (400 for local)
   app.post<{ Params: { id: string } }>(
     "/:id/start",
     { preHandler: [app.authenticate] },
@@ -117,7 +134,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     },
   );
 
-  // POST /api/agents/:id/stop — Stop agent process
+  // POST /api/agents/:id/stop — Stop a cloud agent (400 for local)
   app.post<{ Params: { id: string } }>(
     "/:id/stop",
     { preHandler: [app.authenticate] },
@@ -126,47 +143,6 @@ export default async function agentsRoutes(app: FastifyInstance) {
       const result = await stopAgent(app.db, req.params.id, user.sub);
       if (!result.ok) return reply.code(400).send({ error: result.error });
       return result;
-    },
-  );
-
-  // GET /api/agents/:id/logs/stream — SSE proxy to Node Agent
-  app.get<{ Params: { id: string } }>(
-    "/:id/logs/stream",
-    { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const user = req.user as { sub: string };
-      const agent = await getAgent(app.db, req.params.id, user.sub);
-      if (!agent) return reply.code(404).send({ error: "Agent not found" });
-
-      const reqOrigin = req.headers.origin || "";
-      reply.raw.setHeader("Content-Type", "text/event-stream");
-      reply.raw.setHeader("Cache-Control", "no-cache");
-      reply.raw.setHeader("Connection", "keep-alive");
-      if (reqOrigin) {
-        reply.raw.setHeader("Access-Control-Allow-Origin", reqOrigin);
-        reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
-      }
-      reply.hijack();
-
-      // Use node:http directly to avoid undici's default 5-minute body timeout
-      // which crashes the process when an SSE stream stays open longer.
-      const url = new URL(
-        `${NODE_AGENT_URL}/agents/${req.params.id}/logs/stream`,
-      );
-      const proxyReq = http.request(
-        {
-          hostname: url.hostname,
-          port: url.port,
-          path: url.pathname,
-          method: "GET",
-        },
-        (proxyRes) => {
-          proxyRes.pipe(reply.raw, { end: true });
-        },
-      );
-      proxyReq.on("error", () => reply.raw.end());
-      req.raw.on("close", () => proxyReq.destroy());
-      proxyReq.end();
     },
   );
 }
