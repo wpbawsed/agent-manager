@@ -2,15 +2,21 @@ import type { FastifyPluginAsync } from "fastify";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, agentLogs, webhookEvents } from "../db/schema.js";
+import { runReply, type AgentResultLite } from "../lib/reply-policy.js";
 
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
+// Layer B（agent-teammate）用 AGENT_API_TOKEN 回報；接受它或既有 INTERNAL_TOKEN
+const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN || "";
 
 const internalRoutes: FastifyPluginAsync = async (app) => {
-  // Verify internal token (shared secret between Node Agent and API Server)
+  // Verify internal token (shared secret between agents and API Server)
   app.addHook("preHandler", async (req, reply) => {
     const auth = req.headers["authorization"] ?? "";
     const token = auth.replace("Bearer ", "").trim();
-    if (!token || token !== INTERNAL_TOKEN) {
+    const ok =
+      (INTERNAL_TOKEN && token === INTERNAL_TOKEN) ||
+      (AGENT_API_TOKEN && token === AGENT_API_TOKEN);
+    if (!ok) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
   });
@@ -61,46 +67,6 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return reply.code(201).send({ ok: true });
-    },
-  );
-
-  // POST /internal/node-agent/status
-  // Called by Node Agent daemon when an agent process exits
-  app.post<{
-    Body: {
-      agentId: string;
-      status: "stopped" | "crashed";
-      exitCode: number | null;
-    };
-  }>(
-    "/node-agent/status",
-    {
-      schema: {
-        body: {
-          type: "object",
-          required: ["agentId", "status"],
-          properties: {
-            agentId: { type: "string" },
-            status: { type: "string", enum: ["stopped", "crashed"] },
-            exitCode: { type: ["number", "null"] },
-          },
-        },
-      },
-    },
-    async (req, reply) => {
-      const { agentId, status } = req.body;
-      const dbStatus = status === "crashed" ? "error" : "stopped";
-
-      await app.db
-        .update(agents)
-        .set({ status: dbStatus, updatedAt: Date.now() })
-        .where(eq(agents.id, agentId));
-
-      app.log.info(
-        { agentId, status: dbStatus },
-        "Agent status updated from node-agent callback",
-      );
-      return reply.code(200).send({ ok: true });
     },
   );
 
@@ -215,7 +181,7 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
   // Called by BullMQConsumer when a job completes or fails.
   app.patch<{
     Params: { eventId: string };
-    Body: { status: "processing" | "done" | "failed" };
+    Body: { status: "processing" | "done" | "failed"; result?: AgentResultLite };
   }>(
     "/events/:eventId",
     {
@@ -230,18 +196,28 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
           required: ["status"],
           properties: {
             status: { type: "string", enum: ["processing", "done", "failed"] },
+            result: { type: "object", additionalProperties: true },
           },
         },
       },
     },
     async (req, reply) => {
       const { eventId } = req.params;
-      const { status } = req.body;
+      const { status, result } = req.body;
 
       await app.db
         .update(webhookEvents)
         .set({ status })
         .where(eq(webhookEvents.id, eventId));
+
+      // ReplyInterceptor：任務結束 → 依 reply policy 執行 onSuccess/onFailure（fire-and-forget）
+      if (status === "done" || status === "failed") {
+        runReply(
+          app.db,
+          eventId,
+          result ?? { status: status === "done" ? "success" : "failed" },
+        );
+      }
 
       return reply.code(200).send({ ok: true });
     },

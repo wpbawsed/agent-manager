@@ -29,7 +29,7 @@
       <div class="card-header">
         <div>
           <div class="card-title">All Agents</div>
-          <div class="card-sub">每個 Agent 綁定一個 Queue，收到任務後自動執行</div>
+          <div class="card-sub">每個 Agent 綁定一個 Queue，實際執行於獨立部署的 agent-teammate app；狀態由 agent 回報的心跳更新</div>
         </div>
         <button class="btn btn-primary btn-sm" @click="showCreate = true">+ New Agent</button>
       </div>
@@ -61,18 +61,6 @@
             </td>
             <td>
               <div class="action-group">
-                <button
-                  v-if="a.status !== 'running'"
-                  class="btn btn-ghost btn-sm"
-                  :disabled="starting === a.id"
-                  @click="startAgent(a.id)"
-                >▷ Start</button>
-                <button
-                  v-else
-                  class="btn btn-ghost btn-sm"
-                  :disabled="stopping === a.id"
-                  @click="stopAgent(a.id)"
-                >⏹ Stop</button>
                 <button class="btn btn-danger btn-sm" @click="deleteAgent(a.id)">Delete</button>
               </div>
             </td>
@@ -100,7 +88,7 @@
               <option value="">— Select queue —</option>
               <option v-for="q in queues.queues" :key="q.id" :value="q.id">{{ q.name }}</option>
             </select>
-            <div class="form-hint">Agent 啟動後監聽此 Queue 的任務</div>
+            <div class="form-hint">對應的 agent-teammate app 需設定相同 QUEUE_NAME 才能消費此 Queue 的任務</div>
           </div>
           <div class="form-group">
             <label class="form-label">Instruction (optional)</label>
@@ -129,8 +117,6 @@ const queues = useQueuesStore()
 const showCreate = ref(false)
 const creating = ref(false)
 const createError = ref('')
-const starting = ref('')
-const stopping = ref('')
 
 const form = ref({ name: '', queueId: '', instruction: '' })
 
@@ -141,16 +127,6 @@ const errorCount   = computed(() => agents.agents.filter((a) => a.status === 'er
 function queueName(queueId?: string) {
   if (!queueId) return ''
   return queues.queues.find((q) => q.id === queueId)?.name ?? queueId.slice(0, 8)
-}
-
-async function startAgent(id: string) {
-  starting.value = id
-  try { await agents.start(id) } catch { /* ignore */ } finally { starting.value = '' }
-}
-
-async function stopAgent(id: string) {
-  stopping.value = id
-  try { await agents.stop(id) } catch { /* ignore */ } finally { stopping.value = '' }
 }
 
 async function deleteAgent(id: string) {

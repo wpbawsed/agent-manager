@@ -6,6 +6,25 @@ import {
   updateRoutingRule,
   deleteRoutingRule,
 } from "../services/routing.js";
+import type { RoutingCondition, ReplyPolicy } from "../services/routing.js";
+
+// Shared JSON schema fragment for ReplyPolicy — one step per stage, all optional.
+const replyStepSchema = {
+  type: "object",
+  properties: {
+    reply:          { type: "boolean" },
+    jiraTransition: { type: "string" },
+    prefix:         { type: "string" },
+  },
+} as const;
+const replyPolicySchema = {
+  type: ["object", "null"],
+  properties: {
+    onReceived: replyStepSchema,
+    onSuccess:  replyStepSchema,
+    onFailure:  replyStepSchema,
+  },
+} as const;
 
 export default async function routingRoutes(app: FastifyInstance) {
   // POST /api/routing
@@ -15,7 +34,9 @@ export default async function routingRoutes(app: FastifyInstance) {
       brokerId: string;
       queueId: string;
       eventTypes?: string[];
+      conditions?: RoutingCondition[];
       replyTarget?: string;
+      replyPolicy?: ReplyPolicy;
     };
   }>(
     "/",
@@ -29,7 +50,20 @@ export default async function routingRoutes(app: FastifyInstance) {
             brokerId:    { type: "string" },
             queueId:     { type: "string" },
             eventTypes:  { type: "array", items: { type: "string" } },
+            conditions:  {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["field", "op", "value"],
+                properties: {
+                  field: { type: "string" },
+                  op:    { type: "string", enum: ["eq", "neq", "in", "nin", "contains", "startsWith"] },
+                  value: {},
+                },
+              },
+            },
             replyTarget: { type: "string" },
+            replyPolicy: replyPolicySchema,
           },
         },
       },
@@ -63,7 +97,13 @@ export default async function routingRoutes(app: FastifyInstance) {
   // PATCH /api/routing/:id
   app.patch<{
     Params: { id: string };
-    Body: { name?: string | null; eventTypes?: string[] | null; replyTarget?: string | null };
+    Body: {
+      name?: string | null;
+      eventTypes?: string[] | null;
+      conditions?: RoutingCondition[] | null;
+      replyTarget?: string | null;
+      replyPolicy?: ReplyPolicy | null;
+    };
   }>(
     "/:id",
     {
@@ -73,7 +113,20 @@ export default async function routingRoutes(app: FastifyInstance) {
           properties: {
             name:        { type: ["string", "null"] },
             eventTypes:  { type: ["array", "null"], items: { type: "string" } },
+            conditions:  {
+              type: ["array", "null"],
+              items: {
+                type: "object",
+                required: ["field", "op", "value"],
+                properties: {
+                  field: { type: "string" },
+                  op:    { type: "string", enum: ["eq", "neq", "in", "nin", "contains", "startsWith"] },
+                  value: {},
+                },
+              },
+            },
             replyTarget: { type: ["string", "null"] },
+            replyPolicy: replyPolicySchema,
           },
         },
       },

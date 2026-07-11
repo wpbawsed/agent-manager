@@ -74,7 +74,9 @@ export const routingRules = pgTable("routing_rules", {
     .notNull()
     .references(() => queues.id),
   eventTypes: text("event_types"),   // JSON string[]: allowlist of eventType values. null = catch-all
+  conditions: text("conditions"),    // JSON RoutingCondition[]: payload-level filter. null = pass-through
   replyTarget: text("reply_target"), // Override reply URI. Null = use event's replyTo.
+  replyPolicy: text("reply_policy"), // JSON ReplyPolicy: { onReceived?, onSuccess?, onFailure? }. null = no auto reply.
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -90,6 +92,20 @@ export const webhookEvents = pgTable("webhook_events", {
   routed: integer("routed").notNull().default(0),   // # of queues enqueued
   errorMessage: text("error_message"),
   payloadSummary: text("payload_summary"),          // JSON truncated to 2KB
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// ── reply_contexts ─────────────────────────────────────────────────────────
+// Written at enqueue time so the ReplyInterceptor can resolve where/what/how to
+// reply when the agent reports its result back (PATCH /internal/events/:id).
+// Keyed by eventId; deleted after the reply fires. One row per event (first
+// matched rule with a replyPolicy wins if an event fans out to multiple rules).
+export const replyContexts = pgTable("reply_contexts", {
+  eventId: text("event_id").primaryKey(),
+  brokerId: text("broker_id").notNull(),      // to load outbound tokens from broker.requiredVars
+  replyTo: text("reply_to"),                  // e.g. slack://C123/ts, jira://PROJ-1
+  jiraIssueKey: text("jira_issue_key"),       // parsed from a jira:// replyTo, for transitions
+  policy: text("policy").notNull(),           // JSON ReplyPolicy
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

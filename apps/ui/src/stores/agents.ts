@@ -8,12 +8,11 @@ export interface Agent {
   instruction?: string
   queueId?: string
   queueName?: string
-  runtimeCmd?: string
   apiToken: string
+  // 'running' 由 agent 自己回報的心跳更新（/internal/agent-heartbeat），非平台驅動
   status: 'stopped' | 'running' | 'error'
   createdAt: number
   updatedAt: number
-  liveStatus?: { running: boolean; pid?: number; uptime?: number }
 }
 
 export const useAgentsStore = defineStore('agents', {
@@ -41,16 +40,6 @@ export const useAgentsStore = defineStore('agents', {
     async delete(id: string) {
       await agentsApi.delete(id)
       this.agents = this.agents.filter((a) => a.id !== id)
-    },
-    async start(id: string) {
-      await agentsApi.start(id)
-      const a = this.agents.find((a) => a.id === id)
-      if (a) a.status = 'running'
-    },
-    async stop(id: string) {
-      await agentsApi.stop(id)
-      const a = this.agents.find((a) => a.id === id)
-      if (a) a.status = 'stopped'
     },
   },
 })

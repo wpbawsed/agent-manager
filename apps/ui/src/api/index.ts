@@ -40,8 +40,6 @@ export const agentsApi = {
   create: (data: Record<string, unknown>) => api.post('/agents', data),
   update: (id: string, data: Record<string, unknown>) => api.patch(`/agents/${id}`, data),
   delete: (id: string) => api.delete(`/agents/${id}`),
-  start: (id: string) => api.post(`/agents/${id}/start`),
-  stop: (id: string) => api.post(`/agents/${id}/stop`),
 }
 
 // ── Queues ──
@@ -68,6 +66,7 @@ export const brokersApi = {
 export const routingApi = {
   list: () => api.get('/routing'),
   create: (data: Record<string, unknown>) => api.post('/routing', data),
+  update: (id: string, data: Record<string, unknown>) => api.patch(`/routing/${id}`, data),
   delete: (id: string) => api.delete(`/routing/${id}`),
 }
 

@@ -2,7 +2,7 @@
   "name": "agent-manager",
   "private": true,
   "scripts": {
-    "dev": "pnpm --parallel --filter @agent-manager/api --filter @agent-manager/ui --filter @agent-manager/node-agent run dev",
+    "dev": "pnpm --parallel --filter @agent-manager/api --filter @agent-manager/ui run dev",
     "dev:api": "pnpm --filter @agent-manager/api run dev",
     "dev:ui": "pnpm --filter @agent-manager/ui run dev",
     "docker:dev": "docker compose up --build",

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { eq, and } from "drizzle-orm";
-import { brokers, routingRules, queues, users, webhookEvents } from "../db/schema.js";
+import { brokers, routingRules, queues, users, webhookEvents, replyContexts } from "../db/schema.js";
 import { normalizers } from "../normalizers/index.js";
+import { runAck, resolveIssueKey, type ReplyPolicy } from "../lib/reply-policy.js";
 
 const SUPPORTED_TYPES = ["slack", "jira", "github", "line", "railway", "notion"] as const;
 type SourceType = typeof SUPPORTED_TYPES[number];
@@ -41,6 +42,26 @@ export default async function webhookRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { tenant, sourceType, sourceId } = req.params;
       const now = Date.now();
+
+      // Raw body log — useful for inspecting unknown webhook payloads (e.g. Railway)
+      req.log.info(
+        {
+          webhook: {
+            tenant,
+            sourceType,
+            sourceId,
+            headers: req.headers,
+            body: (() => {
+              try {
+                return JSON.parse((req.body as Buffer).toString("utf8"));
+              } catch {
+                return (req.body as Buffer).toString("utf8");
+              }
+            })(),
+          },
+        },
+        "[webhook] raw incoming request",
+      );
 
       // Helper: fire-and-forget webhook event log insert (never throws)
       const logWebhookEvent = (fields: {
@@ -148,7 +169,9 @@ export default async function webhookRoutes(app: FastifyInstance) {
           queueId: routingRules.queueId,
           queueName: queues.name,
           eventTypes: routingRules.eventTypes,
+          conditions: routingRules.conditions,
           replyTarget: routingRules.replyTarget,
+          replyPolicy: routingRules.replyPolicy,
         })
         .from(routingRules)
         .innerJoin(queues, eq(routingRules.queueId, queues.id))
@@ -169,6 +192,8 @@ export default async function webhookRoutes(app: FastifyInstance) {
 
       let routed = 0;
       const errors: string[] = [];
+      // 第一個帶 replyPolicy 的 matched rule 作為本事件的 reply 綁定（ack 現在做、reply 之後做）
+      let replyBinding: { replyTo: string | null; policy: ReplyPolicy } | null = null;
 
       for (const rule of rules) {
         // Filter by event_types allowlist (empty/null = catch-all)
@@ -181,6 +206,39 @@ export default async function webhookRoutes(app: FastifyInstance) {
           }
         }
 
+        // Filter by payload conditions (empty/null = pass-through)
+        if (rule.conditions) {
+          try {
+            const conditions = JSON.parse(rule.conditions) as Array<{
+              field: string;
+              op: string;
+              value: string | string[];
+            }>;
+            if (conditions.length > 0) {
+              const payload = (agentEvent as Record<string, unknown>).payload as Record<string, unknown> ?? {};
+              const topLevel = agentEvent as Record<string, unknown>;
+              const passed = conditions.every(({ field, op, value }) => {
+                const actual = String(payload[field] ?? topLevel[field] ?? "");
+                switch (op) {
+                  case "eq":         return actual === String(value);
+                  case "neq":        return actual !== String(value);
+                  case "in":         return (value as string[]).includes(actual);
+                  case "nin":        return !(value as string[]).includes(actual);
+                  case "contains":   return actual.toLowerCase().includes(String(value).toLowerCase());
+                  case "startsWith": return actual.toLowerCase().startsWith(String(value).toLowerCase());
+                  default:           return true;
+                }
+              });
+              if (!passed) {
+                req.log.info({ ruleId: rule.id }, "Event filtered by conditions");
+                continue;
+              }
+            }
+          } catch {
+            req.log.warn({ ruleId: rule.id }, "Failed to parse rule conditions");
+          }
+        }
+
         if (!rule.queueName) {
           req.log.warn({ ruleId: rule.id, queueId: rule.queueId }, "Queue has no name, skipping");
           continue;
@@ -188,16 +246,27 @@ export default async function webhookRoutes(app: FastifyInstance) {
 
         try {
           const queue = app.getQueue(rule.queueName);
-          const jobData = rule.replyTarget
-            ? { ...agentEvent, replyTo: rule.replyTarget }
-            : agentEvent;
+          const replyTo =
+            rule.replyTarget ??
+            ((agentEvent as Record<string, unknown>).replyTo as string | undefined) ??
+            null;
+          const jobData = replyTo ? { ...agentEvent, replyTo } : agentEvent;
           await queue.add("agent-event", jobData, {
+            jobId: eventId, // 冪等：webhook 重送 → 同一 eventId 不會重跑
             attempts: 3,
             backoff: { type: "exponential", delay: 2000 },
             removeOnComplete: { count: 1000 },
             removeOnFail: { count: 500 },
           });
           routed++;
+          // 捕捉本事件的 reply 綁定（第一個有 policy 的 rule 勝出）
+          if (!replyBinding && rule.replyPolicy) {
+            try {
+              replyBinding = { replyTo, policy: JSON.parse(rule.replyPolicy) as ReplyPolicy };
+            } catch {
+              req.log.warn({ ruleId: rule.id }, "Failed to parse reply_policy");
+            }
+          }
           req.log.info(
             { eventId, queueId: rule.queueId, queue: rule.queueName },
             "Event enqueued",
@@ -206,6 +275,26 @@ export default async function webhookRoutes(app: FastifyInstance) {
           req.log.error({ err, queueId: rule.queueId }, "Failed to enqueue event");
           errors.push(rule.queueId);
         }
+      }
+
+      // Reply policy：持久化 reply context（供之後 ReplyInterceptor 取用）+ 立刻執行 ack
+      if (replyBinding) {
+        await app.db
+          .insert(replyContexts)
+          .values({
+            eventId,
+            brokerId: broker.id,
+            replyTo: replyBinding.replyTo,
+            jiraIssueKey: resolveIssueKey(replyBinding.replyTo) ?? null,
+            policy: JSON.stringify(replyBinding.policy),
+            createdAt: Date.now(),
+          })
+          .onConflictDoNothing();
+        runAck(app.db, {
+          brokerId: broker.id,
+          replyTo: replyBinding.replyTo,
+          policy: replyBinding.policy,
+        });
       }
 
       // Only write to DB if at least one agent was matched and enqueued
