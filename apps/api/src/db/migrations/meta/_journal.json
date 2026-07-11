@@ -48,7 +48,14 @@
       "idx": 6,
       "version": "6",
       "when": 1783760170329,
-      "tag": "0006_add_reply_policy_and_contexts",
+      "tag": "0006_agent_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783760170330,
+      "tag": "0007_add_reply_policy_and_contexts",
       "breakpoints": true
     }
   ]
