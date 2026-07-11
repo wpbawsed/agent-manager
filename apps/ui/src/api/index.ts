@@ -40,6 +40,9 @@ export const agentsApi = {
   create: (data: Record<string, unknown>) => api.post('/agents', data),
   update: (id: string, data: Record<string, unknown>) => api.patch(`/agents/${id}`, data),
   delete: (id: string) => api.delete(`/agents/${id}`),
+  start: (id: string) => api.post(`/agents/${id}/start`),
+  stop: (id: string) => api.post(`/agents/${id}/stop`),
+  integration: (id: string) => api.get(`/agents/${id}/integration`),
 }
 
 // ── Queues ──

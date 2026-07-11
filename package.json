@@ -7,6 +7,7 @@
     "dev:ui": "pnpm --filter @agent-manager/ui run dev",
     "docker:dev": "docker compose up --build",
     "deploy:workers": "pnpm --filter @agent-manager/worker-slack run deploy && pnpm --filter @agent-manager/worker-jira run deploy",
+    "deploy:sandbox": "pnpm --filter @agent-manager/sandbox-worker run deploy",
     "tf:init": "terraform -chdir=infra/terraform init",
     "tf:plan": "terraform -chdir=infra/terraform plan",
     "tf:apply": "terraform -chdir=infra/terraform apply"

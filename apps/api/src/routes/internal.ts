@@ -113,7 +113,7 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
 
       await app.db
         .update(agents)
-        .set({ status: "running", updatedAt: Date.now() })
+        .set({ status: "running", lastHeartbeatAt: Date.now(), updatedAt: Date.now() })
         .where(eq(agents.id, agent_id));
 
       return reply.code(200).send({ ok: true });
