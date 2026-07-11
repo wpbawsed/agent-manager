@@ -17,8 +17,8 @@ importers:
         specifier: ^8.0.1
         version: 8.0.1
       '@wpbawsed/agent-broker-core':
-        specifier: file:../../../agent-broker/packages/core
-        version: file:../agent-broker/packages/core
+        specifier: ^0.1.1
+        version: 0.1.1
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -1237,8 +1237,8 @@ packages:
       vue:
         optional: true
 
-  '@wpbawsed/agent-broker-core@file:../agent-broker/packages/core':
-    resolution: {directory: ../agent-broker/packages/core, type: directory}
+  '@wpbawsed/agent-broker-core@0.1.1':
+    resolution: {integrity: sha512-dtkIXHHWS1uSpE1cS8bVDYdAtP0ggy/O5C/vm0GaWOHxK/0isL2yGbWoJzhg7N0C4bcl/AVbK8UYYW+1/D6Gdg==}
 
   abstract-logging@2.0.1:
     resolution: {integrity: sha512-2BjRTZxTPvheOvGbBslFSYOUkr+SjPtOnrLP33f+VIWLzezQpZcqVg7ja3L4dBXmzzgwT+a029jRx5PCi3JuiA==}
@@ -3023,7 +3023,7 @@ snapshots:
       typescript: 6.0.3
       vue: 3.5.34(typescript@6.0.3)
 
-  '@wpbawsed/agent-broker-core@file:../agent-broker/packages/core':
+  '@wpbawsed/agent-broker-core@0.1.1':
     dependencies:
       zod: 3.25.76
 
