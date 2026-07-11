@@ -8,6 +8,16 @@ import { runAck, resolveIssueKey, type ReplyPolicy } from "../lib/reply-policy.j
 const SUPPORTED_TYPES = ["slack", "jira", "github", "line", "railway", "notion"] as const;
 type SourceType = typeof SUPPORTED_TYPES[number];
 
+const UNSAFE_FIELD_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Own-property-only lookup, rejecting dunder/prototype-chain keys from routing rule conditions. */
+function safeFieldLookup(obj: Record<string, unknown>, field: string): unknown {
+  if (UNSAFE_FIELD_NAMES.has(field) || !Object.prototype.hasOwnProperty.call(obj, field)) {
+    return undefined;
+  }
+  return obj[field];
+}
+
 export default async function webhookRoutes(app: FastifyInstance) {
   // Add a content-type parser so we can read the raw body for HMAC verification
   app.addContentTypeParser(
@@ -218,7 +228,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
               const payload = (agentEvent as Record<string, unknown>).payload as Record<string, unknown> ?? {};
               const topLevel = agentEvent as Record<string, unknown>;
               const passed = conditions.every(({ field, op, value }) => {
-                const actual = String(payload[field] ?? topLevel[field] ?? "");
+                const actual = String(safeFieldLookup(payload, field) ?? safeFieldLookup(topLevel, field) ?? "");
                 switch (op) {
                   case "eq":         return actual === String(value);
                   case "neq":        return actual !== String(value);
@@ -290,11 +300,15 @@ export default async function webhookRoutes(app: FastifyInstance) {
             createdAt: Date.now(),
           })
           .onConflictDoNothing();
-        runAck(app.db, {
-          brokerId: broker.id,
-          replyTo: replyBinding.replyTo,
-          policy: replyBinding.policy,
-        });
+        runAck(
+          app.db,
+          {
+            brokerId: broker.id,
+            replyTo: replyBinding.replyTo,
+            policy: replyBinding.policy,
+          },
+          req.log,
+        );
       }
 
       // Only write to DB if at least one agent was matched and enqueued

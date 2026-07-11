@@ -216,6 +216,7 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
           app.db,
           eventId,
           result ?? { status: status === "done" ? "success" : "failed" },
+          req.log,
         );
       }
 
