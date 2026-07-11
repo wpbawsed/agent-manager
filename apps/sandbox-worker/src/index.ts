@@ -19,6 +19,20 @@ interface Env {
 
 const RUNNER_CMD = "node /opt/agent-runner/index.js";
 
+// Env vars that could be used to hijack the runner process (module preloading,
+// binary resolution, etc.) — never let a caller-supplied `env` override these.
+const UNSAFE_ENV_KEYS = new Set(["NODE_OPTIONS", "LD_PRELOAD", "PATH", "ANTHROPIC_API_KEY"]);
+
+function sanitizeEnv(env: Record<string, string> | undefined): Record<string, string> {
+  if (!env) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (UNSAFE_ENV_KEYS.has(key) || typeof value !== "string") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -81,7 +95,7 @@ export default {
 
           const proc = await sandbox.startProcess(body.cmd ?? RUNNER_CMD, {
             env: {
-              ...body.env,
+              ...sanitizeEnv(body.env),
               ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
             },
             cwd: "/workspace",

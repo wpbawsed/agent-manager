@@ -32,6 +32,9 @@ function rateLimited(agentId: string): boolean {
 // Push APIs implemented by every agent (local or cloud).
 // Auth: Bearer {agent.apiToken} — each agent can only report about itself.
 // INTERNAL_TOKEN is also accepted so trusted infra (sandbox-worker) can proxy.
+// NOTE: INTERNAL_TOKEN is a single shared secret valid for ANY agent id (it is
+// not scoped per-agent). Treat it like a server credential — never expose it
+// to end users or client-side code, only to sandbox-worker's own env.
 //
 //   POST /internal/agents/:id/heartbeat   ← alive + uptime
 //   POST /internal/agents/:id/metrics     ← cpu / mem / counters
@@ -116,7 +119,8 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
     },
     async (req, reply) => {
       const { id } = req.params;
-      const ownerId = (req as { agentOwnerId?: string }).agentOwnerId ?? "unknown";
+      const ownerId = (req as { agentOwnerId?: string }).agentOwnerId;
+      if (!ownerId) return reply.code(500).send({ error: "Owner resolution failed" });
       const b = req.body ?? {};
       await app.db.insert(agentMetrics).values({
         id: randomUUID(),
@@ -171,7 +175,8 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
     },
     async (req, reply) => {
       const { id } = req.params;
-      const ownerId = (req as { agentOwnerId?: string }).agentOwnerId ?? "unknown";
+      const ownerId = (req as { agentOwnerId?: string }).agentOwnerId;
+      if (!ownerId) return reply.code(500).send({ error: "Owner resolution failed" });
       const now = Date.now();
       const rows = req.body.logs.map((l, i) => ({
         id: randomUUID(),
