@@ -86,6 +86,7 @@
 import { ref, onMounted } from 'vue'
 import { useBrokersStore } from '@/stores/brokers'
 import type { Broker } from '@/stores/brokers'
+import { BACKEND_HOST } from '@/api'
 
 const brokers = useBrokersStore()
 
@@ -98,7 +99,11 @@ const brokerTypes = ['jira', 'notion', 'slack', 'line', 'railway', 'github']
 const form = ref({ name: '', type: '', signingSecret: '' })
 
 function webhookUrl(b: Broker) {
-  const host = window.location.origin.replace(':3000', ':8080')
+  // Webhook routes live outside /api and aren't proxied by nginx, so this
+  // always needs an absolute API host — fall back to the docker-compose
+  // port-mapping convention (UI :3000 / API :8080) when VITE_BACKEND_HOST
+  // isn't set (e.g. Railway with the API as a separate service).
+  const host = BACKEND_HOST || window.location.origin.replace(':3000', ':8080')
   return `${host}${b.webhookPath}`
 }
 
