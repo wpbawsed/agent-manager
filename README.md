@@ -24,7 +24,7 @@ Agent           ← 1:1 consumer, runs Claude Code CLI with your instruction
 
 | Package | Description |
 |---|---|
-| `packages/api` | Fastify REST API + Drizzle ORM + PostgreSQL |
+| `apps/api` | Fastify REST API + Drizzle ORM + PostgreSQL |
 | `packages/ui` | Vue 3 + Vite + Naive UI frontend |
 | `packages/node-agent` | Node.js daemon that manages Agent processes |
 | `packages/channels` | Shared types / channel definitions |
@@ -82,9 +82,11 @@ docker compose up postgres redis -d
 
 ### 4. Run migrations
 
+Only needed for local dev — Docker/Railway deploys run this automatically on
+every container boot (see `apps/api/Dockerfile` + `apps/api/src/db/migrate.ts`).
+
 ```bash
-cd packages/api
-pnpm run migrate
+pnpm --filter @agent-manager/api run db:migrate
 ```
 
 ### 5. Start development servers
