@@ -3,7 +3,7 @@ import axios from 'axios'
 // Empty by default → relative '/api', proxied by nginx/vite to the backend
 // (docker-compose / local dev). Set at container runtime (see entrypoint.sh)
 // to point at a backend deployed as a separate service, e.g. on Railway.
-const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST || ''
+export const BACKEND_HOST = (import.meta.env.VITE_BACKEND_HOST || '').replace(/\/+$/, '')
 
 const api = axios.create({
   baseURL: `${BACKEND_HOST}/api`,
