@@ -20,4 +20,6 @@ RUN mkdir -p /data
 
 EXPOSE 8080
 
-CMD ["node_modules/.bin/tsx", "src/app.ts"]
+# Apply pending migrations before serving traffic. Idempotent — drizzle
+# tracks what's already applied, so this is safe on every boot/restart.
+CMD ["sh", "-c", "node_modules/.bin/tsx src/db/migrate.ts && node_modules/.bin/tsx src/app.ts"]
