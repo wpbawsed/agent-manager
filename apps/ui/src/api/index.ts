@@ -1,7 +1,12 @@
 import axios from 'axios'
 
+// Empty by default → relative '/api', proxied by nginx/vite to the backend
+// (docker-compose / local dev). Set at container runtime (see entrypoint.sh)
+// to point at a backend deployed as a separate service, e.g. on Railway.
+const BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST || ''
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: `${BACKEND_HOST}/api`,
   timeout: 15000,
 })
 
@@ -93,7 +98,7 @@ export const adminApi = {
 // Returns a ReadableStream reader for SSE chunks from a POST endpoint
 export function playgroundStream(agentId: string, message: string) {
   const token = localStorage.getItem('token')
-  return fetch('/api/playground/run', {
+  return fetch(`${BACKEND_HOST}/api/playground/run`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -52,6 +52,9 @@ services:
       - "3000:3000"
     depends_on:
       - api
+    environment:
+      # 空字串 = 呼叫相對路徑 /api，由 nginx.conf 轉送到 api service（本 compose 預設行為）
+      - VITE_BACKEND_HOST=${VITE_BACKEND_HOST:-}
     restart: unless-stopped
 
 volumes:
