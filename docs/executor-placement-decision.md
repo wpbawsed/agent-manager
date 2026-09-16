@@ -229,3 +229,68 @@ clone 讓資料夾保持為那個可攜單位，image 保持無狀態。
 得再加 `strictMcpConfig: true`」。**`runner.ts` 用 `settingSources:["project"]`
 且沒設 `strictMcpConfig`**——在容器裡沒事，但誰在本機跑 Layer B runner，
 本機 Claude Code 連過的 Gmail / Notion / Jira MCP 會整包掛進去。未修。
+
+---
+
+## 10. Routine 數量、headless 的互動限制、固定 image 的缺口
+
+### 10.1 routine 數 ＝ 執行者數，不是節點數
+
+**問題**：8 個 workflow × 4 節點 ＝ 32 節點，其中 10 個由同一個 agent 負責
+→ 直覺上要開 10 支 routine，無法管理。
+
+**錯在把 routine 當成 workflow 的一個步驟。** 它只是「叫某個執行者起床」的鬧鐘。
+**節點身分屬於工作項目（卡片），不屬於鬧鐘。** 所以那 10 個節點共用
+**1 個 gate**——gate 問「我有沒有準備就緒的卡」，卡片自己說它是哪個節點。
+`pull-ready-gate.sh` 已經是 agent-scoped，不需要改。
+
+**真正缺的是「推進圖」的那個東西**（目前那個角色是人工把卡片拉到準備就緒）：
+
+| 放哪 | 做法 | 評價 |
+|---|---|---|
+| **cloud-workbench（D1 ＋ Workers Cron）** | workflow 圖存 D1；某卡結案 → 建立／放行下一節點的卡 | **推薦**。合 `routine-registry.md` §2 判準：「不需要 agent 思考、不需要本機檔案 → 可上 Workers Cron」。推進圖是純狀態轉換 |
+| Layer A（agent-manager） | 已有 Broker → Routing Rule → Queue；節點完成 → event → 下一個 queue | 需要 webhook 驅動入口時才值得 |
+| 卡片帶 `next` 欄位 | 最便宜、零新基建 | 圖散在 32 張卡裡，看不到 workflow 全貌 |
+
+採 D1 後的數量：**N 個 gate（N ＝ 真的會執行工作的 agent 數）＋ 1 支 Workers Cron**。
+新增第 9 個 workflow ＝ insert 幾筆 rows，不是新建 routine。32 → 4。
+
+### 10.2 `claude -p` 不能對話，但 session 沒丟掉
+
+`-p, --print` ＝ "Print response and exit"，無互動。三個細節：
+
+1. **session 可以接回去**：`--output-format json` 回傳 `session_id`，
+   事後 `claude --resume <session-id>` 就是一個正常互動 session。
+   所以是「先自動跑完，要討論再接回去」，不是「只能看結果」。
+2. **必須明寫 `--permission-mode`**：headless 下任何會彈權限詢問的動作
+   ＝沒人能回答＝直接被拒，任務死在那裡。已修進 `pull-ready-gate.sh`
+   （預設 `bypassPermissions`，`GATE_PERMISSION_MODE` 可覆寫）。
+   關鍵：**PreToolUse guard hook 不受 permission mode 影響**，
+   `guard-task-card` / `guard-secret-pattern` / branch guard 全都還在攔，
+   所以這不是把防護拆掉。
+3. **「需要人」要變成卡片的一級狀態，不要變成互動 prompt**：
+   `wb block <id> decision|permission|external|physical "在等什麼"` → 線上「待裁決」撈出來。
+   這比互動詢問**更適合**無人值守——凌晨三點的一個 prompt 會卡住整條隊列，
+   一張 blocked 卡不會。
+
+### 10.3 「固定 image ＋ agent 當資料」的缺口清單
+
+已完成：skills 投影（§9.3）＋ `harness` 早就是參數。剩下：
+
+| # | 缺什麼 | 現況（有據） | 為什麼卡 |
+|---|---|---|---|
+| 1 | agent 身分從 event 來 | `config.ts`：`agentId: process.env.AGENT_ID ?? "agent-teammate"`，部署層固定，heartbeat 用它 | 一個 process 服務多個 agent，身分必須 per-task |
+| 2 | 一個 service 消費多 queue | `env.queueName` 單一必填，`startConsumer` 綁一條 | 不改就還是一 agent 一 service，閒置成本 ×N |
+| 3 | agent 資料夾開工時取得 | `index.ts` 於 boot `readFileSync(appRoot/CLAUDE.md)` ＋ `allow-repos.json`，打進 image | 要變成「資料」就不能在 build 時固化 |
+| 4 | allow-repos 的信任邊界 | 從 image 內檔案讀（＝可信） | 改 clone 後白名單必須來自可信的 agent 資料夾 git ref，**不能由 event 指定**，否則安全邊界被呼叫方控制 |
+| 5 | per-agent secrets | Railway env 注入，一 service 一組 | sales-agent 要 `PRODUCT_API_KEY_*`、dev agent 要 git token；一個 image 服務 N 個 agent 時要依 agentId 解析 |
+| 6 | 固定 image ＝ 固定工具鏈 | `node:22-slim` ＋ git | agent 若需要 bun（sales-agent 的 `.mcp.json` 就指向 bun）、Go、Python，image 得是所有需求的聯集。**這是本方案的真實代價，要先盤點** |
+| 7 | `.mcp.json` 可攜 | sales-agent 寫死 `/Users/wangxunyang/.bun/bin/bun` ＋ 絕對路徑 | 容器裡必壞。要嘛 channel 上移 Layer A（已是方向），要嘛 adapter 一起容器化 |
+| 8 | 對話型 sessionId resume | 無 | §9.2 |
+
+**1 + 2 + 3 是核心三件**，都在 `packages/core`、互相依賴，做完方案就成立。
+4 是安全前提不能跳；5、6 是營運前提；7、8 看 agent 類型。
+最小可行順序：**1+2+3 → 4 → 5**，6 先盤點（列出每個 agent 真正需要的工具鏈，看聯集有多醜）。
+
+> 順帶：`config.ts` 的 `model` 預設是 `claude-opus-4-8`。現行最新是 Opus 5 / Sonnet 5——
+> 若哪天真走 API 計價，節點型例行工作換 Sonnet 5 是成本差最大的單一變數。
