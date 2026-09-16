@@ -150,3 +150,82 @@ harness 從 event 或 clone 下來的 repo 讀，不靠部署形態區分。閒�
 | **一個 agent 一個 Railway service** | 閒置成本乘以 agent 數量，見 §4 |
 | **18 個 agent 各補一支 routine** | 綁機器、不版控、同時醒來互撞 rate limit，見 §2 |
 | **Cloudflare Sandbox** | 2026-07-04 已否決，見 `sandbox-migration-todo.md` |
+
+---
+
+## 9. 2026-09-16 補充：實測後的三項修正
+
+### 9.1 routine 不該用來輪詢「有沒有工作」
+
+**原始判斷錯誤**：§0 建議「本機 CLI 當預設，觸發器從 routine 換成 queue pull」，
+但沒算空轉成本。使用者先前把 `pa-pull-ready` 關掉的理由正是這個，而且是對的。
+
+每次排程觸發都是**開一個全新 Claude session**（system prompt ＋ tool 定義 ＋ 根
+`CLAUDE.md` ＋ agent `CLAUDE.md` ＋ 排程 SKILL ＋ `pull-ready` SKILL），還沒碰到
+`wb` 就先燒掉兩三萬 token。`*/30` ＝ 一天 48 次 ≈ **每天 100～170 萬 token 純空轉**。
+
+**真正的問題**：「有沒有工作」這個判斷被放在 Claude 裡面。那只是一個 HTTP 請求。
+
+**解法**：閘門移到 Claude 外面。`_utils/scripts/pull-ready-gate.sh`（＋
+`_utils/templates/pull-ready-gate.plist.template`）：shell 先問平台，0 張就靜默
+`exit 0`（成本＝一次 HTTPS 請求、**0 token**），有卡才 `exec claude -p "/pull-ready"`。
+
+附帶解掉 §2 記的兩個 routine 問題：script 與 plist **可進 git**（可版控、可 review），
+cwd 明寫在 script 裡而不是隱性綁在建立當下的 session。且內建互斥鎖——dev 類任務
+動輒 20–40 分鐘，沒有鎖會疊出多個 claude process 搶同一個 repo 的 worktree。
+
+> ⚠️ 測試一律加 `--dry-run`。不加會真的認領卡片（改狀態、建 `works/` 資料夾），
+> 那是真實副作用不是演練。
+
+**這也意味著 §0.2「換成 queue pull」對這個用途是過度設計**——
+「卡片拉到準備就緒 → agent 自動執行」不需要 queue、不需要 Railway，
+`/pull-ready` skill（19 個 agent 都已安裝、slug 皆正確）＋ 一個 shell 閘門就夠了。
+
+### 9.2 agent 可攜性要分兩類，不是一個問題
+
+「把 agent 資料夾丟進容器就變成新 agent」對**一次性任務型** agent 成立，
+對**對話型** agent 不成立。
+
+sales-agent 是對話型：「未提及組織時追問業務，**等待回覆後繼續**」「缺欄位時追問，
+**等待補充**」「多候選時請業務選擇，**等待選擇**」「同一 thread 共享對話歷史」。
+而 `runner.ts` 是一次性：`query()` → 解析 → `cleanup()` → 結束。
+INITIALIZATION_PLAN 自己寫了「非 MCP-as-channel（不需常駐 session）」。
+
+一次性 runner 輸出「❓ 請提供價格」然後退出 ＝ session 丟掉。業務在 thread 回覆
+→ Layer A 送一個新 event → 沒有記憶的新容器 → 又從頭問組織。
+
+**缺的機制**：`repos/agent-sdk-demo/README.md` 已記錄——「把 `result` 帶回來的
+`sessionId` 在下一輪傳成 `resume`，SDK 自己接續」。需要 Layer A 存
+`slack_thread_ts → sessionId`、`runner.ts` 支援 `resume`（目前沒有），
+且 `cleanup()` 不能連 session 狀態一起刪。
+
+**派工判準補充**：對話型 agent 在 session 續接做好之前，不要派到 Layer B。
+
+### 9.3 固定 image ＋ agent 當資料（取代 Phase 5）
+
+| | 一 agent 一 image（Phase 5） | 固定 image ＋ agent 當資料 |
+|---|---|---|
+| 新增 agent | 新 Dockerfile ＋ 新 service ＋ 新部署 | commit 一個資料夾，不用部署 |
+| image 數 | N | 1 |
+| 閒置成本 | × N 個常駐 service | × 1 |
+| 改 core | N 個 service 全部重建 | 一次 |
+
+**機制必須是開工時 clone，不是掛載 volume**（§8 已否決 volume 的理由全部適用）。
+clone 讓資料夾保持為那個可攜單位，image 保持無狀態。
+
+現有程式碼離這個只差一步：`runner.ts` 的 `harness` 已是參數、`prepareWorkspace`
+已有白名單 clone。**2026-09-16 已完成前半**：agent-teammate `fix/agent-skills-not-loaded`
+新增 `projectAgentSkills()`，把 `apps/{name}/.claude/skills/` 投影進 cwd，
+並在 `runner.ts` 明寫 `skills:"all"`。
+
+> 順帶修掉一個一直在線的 bug：那些 skill 目錄**從來沒有被載入過**——
+> `settingSources:["project"]` 只看 cwd（clone 下來的 repo 或空目錄），不看 app 目錄。
+> sales-agent 的 5 個業務技能、b2b-crm 的 6 個技能全部失效，
+> 而 harness 卻寫著「必須呼叫 /xxx 技能，不得自行發明操作流程」。
+
+### 9.4 另一個跨 repo 對讀撈到的洞
+
+`agent-sdk-demo/README.md`：「`settingSources: []` 擋不掉 MCP 連接器……要隔乾淨
+得再加 `strictMcpConfig: true`」。**`runner.ts` 用 `settingSources:["project"]`
+且沒設 `strictMcpConfig`**——在容器裡沒事，但誰在本機跑 Layer B runner，
+本機 Claude Code 連過的 Gmail / Notion / Jira MCP 會整包掛進去。未修。
