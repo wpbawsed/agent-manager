@@ -3,6 +3,9 @@
 > ⚠️ **已過時（2026-07-04）**：`node-agent` 已於本次架構調整中移除，方向改為
 > agent-teammate monorepo 獨立部署到 Railway（見 `personal-developer-agent/repos/agent-teammate/`），
 > 不是遷去 Cloudflare Sandbox。本文件內容不再反映現況，保留僅供歷史參考。
+>
+> 👉 **後續決策（2026-09-16）：`executor-placement-decision.md`** —— 本機 CLI vs Railway Agent SDK
+> 的放置與觸發方式，含 Cloudflare Sandbox 被否決後的完整取代方案。
 
 > 討論日期：2026-06-10  
 > 目標：將 agent runtime 從本機 node-agent 遷移到 Cloudflare Sandbox，讓電腦不需要開著也能執行 agent。
