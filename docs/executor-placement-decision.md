@@ -6,6 +6,31 @@
 
 ---
 
+## 名詞對照（先看這個，本文通篇在用）
+
+| 簡稱 | 其實是 | 在哪 |
+|---|---|---|
+| **Layer A** | `agent-manager` —— 控制平面：收 webhook、決定丟哪個 queue、回覆 Slack/Jira | `repos/agent-manager/` |
+| **Layer B** | `agent-teammate` —— 實際幹活的：從 queue 拿事做，做完回報 | `repos/agent-teammate/` |
+| **Gate** | `pull-ready-gate.sh` —— 一支 shell：先問平台有沒有準備就緒的卡，沒有就結束（0 token），有才叫 `claude -p` | `_utils/scripts/pull-ready-gate.sh` |
+| **Path L / Path C** | 本文自訂簡稱。L＝local（本機跑）、C＝cloud（雲端跑）。**不是既有術語** | 見下圖 |
+
+Layer A / Layer B 的命名出處是 `agent-teammate/docs/INITIALIZATION_PLAN.md` 開頭。
+
+### 兩條路（同一件事，不要同時蓋）
+
+```
+Path L（本機）： 卡片 → Gate → claude -p → 做完寫回卡片
+                 └─ 不需要 Layer A、不需要 queue、不需要 webhook。今天就能跑
+
+Path C（雲端）： 卡片 → 某個入口 → Layer A 決定丟哪個 queue → 容器裡的 Layer B 做 → 回報
+                 └─ 三個都要，因為工作要跨機器送到雲端容器
+```
+
+所以本文提到「webhook」時，**只與 Path C 有關**；走 Path L 完全不需要。
+
+---
+
 ## 0. 結論（TL;DR）
 
 1. **先蓋契約，不先選跑法。** `agent-teammate/packages/core/src/types.ts` 的 `AgentEvent → AgentResult`
@@ -146,8 +171,8 @@ harness 從 event 或 clone 下來的 repo 讀，不靠部署形態區分。閒�
 
 | 否決項 | 理由 |
 |---|---|
-| **Railway volume 掛 folder** | 單 region、綁單一 service、不能多 replica 共用、無備份故事，且會慢慢跟 git 長歪成雪花。**可攜性來自 git，不來自 volume。** 現行 `workspace.ts`（allow-repos 白名單 → `git clone --depth 1` → 做完 `rm -rf`）是對的，維持 |
-| **一個 agent 一個 Railway service** | 閒置成本乘以 agent 數量，見 §4 |
+| ~~**Railway volume 掛 folder**~~ **⚠️ 2026-09-17 修正，見 §11.1** | 原否決理由（雪花、單 region、綁單一 service）**只適用於把 volume 當資料唯一本體**。volume 當「開工時 git pull 的快取」是可行且簡單的，在一 agent 一 service 的拓樸下綁單一 service 也不是問題 |
+| ~~**一個 agent 一個 Railway service**~~ **⚠️ 2026-09-17 修正，見 §11.2** | agent ↔ queue 在 schema 裡本來就是 1:1（`schema.ts:40`），一 agent 一 service ＋ 換 env 是**設計本意**，不是 workaround。它用閒置成本換簡單，並免費解掉 per-agent secrets |
 | **18 個 agent 各補一支 routine** | 綁機器、不版控、同時醒來互撞 rate limit，見 §2 |
 | **Cloudflare Sandbox** | 2026-07-04 已否決，見 `sandbox-migration-todo.md` |
 
@@ -294,3 +319,64 @@ clone 讓資料夾保持為那個可攜單位，image 保持無狀態。
 
 > 順帶：`config.ts` 的 `model` 預設是 `claude-opus-4-8`。現行最新是 Opus 5 / Sonnet 5——
 > 若哪天真走 API 計價，節點型例行工作換 Sonnet 5 是成本差最大的單一變數。
+
+---
+
+## 11. 2026-09-17 修正：推翻 §8 的兩條否決
+
+### 11.1 Railway volume 不該被全盤否決
+
+§8 原本把「volume 掛 folder」列為明確否決。**那個理由只適用於把 volume 當成資料的唯一本體。**
+
+真正的判準是一個問題：**誰去更新 volume 裡的內容？**
+
+| 誰更新 | 結果 |
+|---|---|
+| 人工編輯 / scp 進去 | 🔴 那份跟 git 分岔，過幾個月沒人知道哪個對。**這才是原本要否決的東西** |
+| 開機／開工時 `git pull` | ✅ volume 只是**快取**（省 clone 時間），資料本體仍是 git。可行且簡單 |
+
+而且在「一 agent 一 service」的拓樸下，Railway volume 綁單一 service 的限制剛好不成問題——
+一個 service 配一個 volume，一對一。
+
+**修正後的立場**：volume ＋ 開工時 pull ＝ §10.3 #3 的可行解法之一，與 ephemeral clone 並列。
+被否決的只有「volume 是唯一本體、靠手動維護」這種用法。
+
+### 11.2 「一 agent 一 service ＋ 換 env」是設計本意
+
+§4 曾以閒置成本為由把它列為要改掉的東西。但：
+
+- `agent-manager/apps/api/src/db/schema.ts:40` —— `queueId ... // 1:1, nullable until assigned`
+- `agent-teammate/packages/core/src/types.ts` 的 `AgentEventSchema` **沒有 agentId 欄位**
+
+也就是 **agent 身分本來就等於 queue**。固定 image ＋ 換 env ＋ 一個 service 消費一條 queue
+是照著設計走，不是繞路。它以閒置成本換取簡單，而且**免費解掉 §10.3 #5**（Railway env
+天生 per-service，不用做 agentId → secret 的解析）。
+
+**連帶降級**：§10.3 的 #1（agentId 從 event 來）與 #2（多 queue）**不是「agent 當資料」的前提**，
+只有在「想省閒置成本、讓一個 process 服務多個 agent」時才需要。
+
+**修正後的缺口清單**（取代 §10.3 的優先序）：
+
+| # | 項目 | 在一 agent 一 service 拓樸下 |
+|---|---|---|
+| 3 | agent 資料夾開工時取得 | 🔴 **唯一非做不可的**——否則改 harness 要 rebuild + redeploy，正好是「agent 當資料」的反面。解法二選一：ephemeral clone，或 volume ＋ pull（§11.1） |
+| 4 | allow-repos 信任邊界 | #3 的附帶，不能跳 |
+| 6 | 固定 image ＝ 固定工具鏈 | 先盤點各 agent 真正需要的工具鏈聯集 |
+| 7 / 8 | `.mcp.json` 可攜 / 對話型 resume | 依 agent 類型 |
+| ~~1~~ ~~2~~ ~~5~~ | agentId in event / 多 queue / per-agent secrets | **不需要**（見上） |
+
+### 11.3 session id 的歸屬
+
+- **卡片型工作**：一張卡 ＝ 一次 session，所以卡片是正確位置。
+  不用改 schema——`wb note` 是 append-only 的進度記錄，記一行
+  `session: $CLAUDE_CODE_SESSION_ID` 即可（同張卡跑幾次就幾筆）。
+  **已實作**於 `_utils/skill-store/shared/pull-ready/SKILL.md` §4（認領後立刻記，
+  因為跑到一半掛掉的 session 才最需要接回去看）。
+- **對話型（Slack thread）**：沒有卡，所以是 `thread_id → session_id` 的對照表，放 Layer A。
+- `CLAUDE_CODE_SESSION_ID` 是 Claude Code 注入的環境變數，實測值等於
+  `~/.claude/projects/<cwd-slug>/<session-id>.jsonl` 的檔名，即 `claude --resume` 吃的 id。
+
+**把 transcript 搬進 agent folder 的想法：先不要。** 兩個坑——
+`CLAUDE_CONFIG_DIR` 雖然能換掉 `~/.claude`，但 SDK 程式碼顯示**一旦設了它就不再回頭讀
+原本登入的憑證**（認證得改走環境變數）；而且 transcript 只增不減，保留期得自己管。
+收益（換機器能接回去）不見得抵得過這兩件事。要搬之前先解決保留期。
