@@ -86,12 +86,16 @@ Cloudflare Sandbox 方向在 2026-07-04 已經否決（`sandbox-migration-todo.m
 | `docker-compose.yml` 的 `SANDBOX_WORKER_URL`、`SANDBOX_INTERNAL_TOKEN` | 刪除 |
 | `apps/api/src/routes/agents.ts`、`agent-push.ts`、`services/agents.ts`、`services/agent-template.ts` | 拿掉 sandbox 分支；`type=cloud` 不再代表「manager 幫你部署到 Sandbox」，改成單純標示「這個 agent 跑在雲端」 |
 | `apps/api/src/db/schema.ts` 的 `agents.runtimeCmd` 與 `type=cloud` 註解 | `runtimeCmd` 只有 Sandbox 用，用 migration 移除；註解改寫 |
-| `apps/ui/src/pages/AgentsPage.vue` | 拿掉 Sandbox 部署相關 UI |
+| `apps/ui/src/pages/AgentsPage.vue`、`apps/ui/src/stores/agents.ts`（`runtimeCmd`、`deploy`） | 拿掉 Sandbox 部署相關 UI 與 store |
+| `apps/api/tests/agents.test.mjs` | 拿掉 sandbox 相關測試 |
+| `agent-push.ts` 開頭講 sandbox-worker 代轉的註解 | 改寫 |
+| `pnpm-lock.yaml` | 刪掉 workspace 後重新產生 |
+| `migrations/0000_*`、`0006_agent_registry.sql` 與 snapshot | **保留**，migration 是歷史紀錄；移除欄位用新的 migration |
 | `docs/sandbox-migration-todo.md` | 檔頭標「已廢棄，見 system-integration-design.md」，不刪（保留否決的理由） |
 
 ### 3.3 清掉 `agents/` 舊資料夾（Q5）
 
-`agent-manager/agents/` 底下的 6 個資料夾（jira-claude-cli、jira-test、line-group、notion-claude-cli、railway-event、slack-reply）是舊模型的殘留，有的還帶著 AWS SDK 的 `node_modules`。**直接刪除**。真正要留的 agent 從 agent-teammate 搬成腦袋 repo（§8 Phase 6）。
+`agent-manager/agents/` 底下的 6 個資料夾（`jira-claude-cli-agent-2600010b` 這類帶 hash 後綴的名字：jira-claude-cli、jira-test、line-group、notion-claude-cli、railway-event、slack-reply）是舊模型的殘留，有的還帶著 AWS SDK 的 `node_modules`。**直接刪除**。它們沒有進 git（`git ls-files agents` 是 0 筆），只存在本機的主 checkout，所以是本機 `rm`，不是 PR 的一部分；順便把 `agents/` 加進 `.gitignore` 或確認已忽略。真正要留的 agent 從 agent-teammate 搬成腦袋 repo（§8 Phase 6）。
 
 ### 3.4 Routing Rule 的目標（Q20）
 
@@ -138,15 +142,30 @@ workflows         { id, ownerId, name, description, currentVersionId, createdAt,
 workflow_versions { id, workflowId, version, graph: jsonb, createdAt }
 
 // workflow_runs：一次執行。固定在開始當下的版本
-workflow_runs     { id, workflowId, versionId, originEventId, brokerId, replyTo,
-                    status,        // running | interrupted | done | failed
+workflow_runs     { id, workflowId, versionId, originEventId, brokerId, ruleId,
+                    replyTo,       // 已套用 rule.replyTarget 覆寫後的回覆目標
+                    replyPolicy,   // 開始時從 Routing Rule 複製一份（JSON ReplyPolicy），END 時用
+                    status,        // running | interrupted | done | failed | cancelled
                     currentNode, steps, state: jsonb, error, createdAt, updatedAt }
 
-// workflow_steps：checkpoint，一步一筆，只新增不修改（結果回來時補上 result 與結束時間）
-workflow_steps    { id, runId, seq, node, eventId, attempt,
+// workflow_steps：checkpoint，一步一筆，只新增（結果回來時補上 result 與結束時間）
+workflow_steps    { id, runId, seq, node, eventId /* "wf_{runId}_{seq}"，每步唯一 */,
+                    kind,          // run | retry | resume | gate
+                    attempt,       // 同一次節點造訪的第幾次嘗試，retry 時遞增
                     status,        // queued | running | done | failed | interrupted
-                    input, result: jsonb, startedAt, endedAt }
+                    input, human /* resume 時人寫的回覆 */, result: jsonb, startedAt, endedAt }
 ```
+
+**每次 enqueue 都是新的一步、新的 `seq`、新的 eventId**。BullMQ 用 eventId 當 `jobId` 而且保留已完成的 job（`removeOnComplete: 1000`），重用 eventId 會被當成重複而丟掉，所以重試和接續也不能沿用舊的 eventId。`kind` 說明這一步是怎麼來的：
+
+| kind | 來源 | 算進 `maxSteps` |
+|---|---|---|
+| `run` | 照邊走到這個節點 | ✅ |
+| `retry` | 暫時性錯誤自動重試（§4.7） | ❌ |
+| `resume` | 中斷後人接續（§4.5） | ❌ |
+| `gate` | 碰到 `interruptBefore` 停下來的紀錄（不丟 job） | ❌ |
+
+`workflow_runs.steps` ＝ `kind=run` 的筆數。
 
 `graph` 的格式：
 
@@ -214,7 +233,7 @@ state = {
 - **核准被擋的動作**：**不能透過 queue 送權限**。job 是任何能寫 Routing Rule 的人都能影響的資料，讓它帶「這次放行 X」就等於把權限邊界交給呼叫方（同 executor 文件 §10.3 #4 的理由）。所以核准只有兩條路：
   1. agent-manager 的「核准」按鈕連到該 agent 的 template UI，**在那裡以有人值守模式接續那個 Session**，L4 動作停在待核准等人按；結束時 template 把結果回報給**同一個 step**
   2. 把 allow 規則寫進腦袋 repo 的 `.claude/settings.json`（git，有 review），下一次就不會再被擋
-- **手動關卡**：按「繼續」就把那個節點丟進 queue。
+- **手動關卡**：走到 `interruptBefore` 的節點時寫一筆 `kind=gate` 的 step 就停下來；按「繼續」寫一筆 `kind=resume` 的 step 並丟 job。引擎判斷「這次是不是人放行的」就看：要 enqueue 的是不是 `resume`。
 
 ### 4.6 繞回與上限（Q16）
 
@@ -224,12 +243,15 @@ state = {
 
 | 情況 | 行為 |
 |---|---|
-| 暫時性錯誤（template 判定為 `UNAVAILABLE`：用量／速率上限、overloaded、未登入、額度不足） | 自動重試，間隔逐次拉長（1 → 5 → 15 分鐘），最多 3 次，`attempt` 遞增 |
+| 暫時性錯誤：`result.unavailable === true`（用量／速率上限、overloaded、未登入、額度不足） | 自動重試，間隔逐次拉長（1 → 5 → 15 分鐘），最多 3 次；每次是一筆新的 `kind=retry` step，`attempt` 遞增 |
+
+判斷暫時性錯誤的是 template，不是引擎：template 的 `report.ts` 已經用 `UNAVAILABLE` 這個 regex 把 heartbeat 設成 `error`，但現在 PATCH 的 `result` 沒有帶這個判斷結果。§5.6 #4 補一個 `unavailable` 欄位，引擎只讀欄位，不在兩邊各維護一份 regex。
 | 其他失敗 | 不重試，照 `status: "failed"` 的邊走；沒有那條邊就讓 Run 失敗 |
 
 ### 4.8 回覆來源平台（Q18）
 
-- 只有**走到 `END`** 才跑 reply policy，用最後一步的 `summary` 和 `mrUrl`，回覆對象是原始事件的 `replyTo`（Routing Rule 的 `replyTarget` 仍可覆寫）
+- 只有**走到 `END`** 才跑 reply policy，用最後一步的 `summary` 和 `mrUrl`，回覆對象是 Run 的 `replyTo`（開始時已套用 Routing Rule 的 `replyTarget`）
+- 做法：現有的 `runReply()` 只從 `reply_contexts` 讀 policy。走到 `END` 時，引擎用 Run 的 `replyPolicy`、`brokerId`、`replyTo` 寫一筆 `reply_contexts`（eventId 用 `wf_{runId}_end`，避免和原始事件或其他 Run 撞 key），再呼叫 `runReply()`，不另寫一套回覆邏輯
 - 中間的步驟不回覆，唯一例外是 §4.5 的「等待審查」
 - Run 失敗時照 reply policy 的 `onFailure` 回覆
 
@@ -237,25 +259,32 @@ state = {
 
 ```
 Routing Rule（目標＝Workflow）
-  → 建 workflow_runs（固定 currentVersionId）
-  → enqueue(entry)
+  → 建 workflow_runs（固定 currentVersionId；複製 rule 的 replyPolicy、套用 replyTarget）
+  → enqueue(entry, kind=run)
 
-enqueue(node)：
-  if node.interruptBefore 且這次不是人放行的 → Run=interrupted，通知，停
-  eventId = "wf_{runId}_{seq}"；寫 workflow_steps(queued)
+enqueue(node, kind, human?)：
+  if kind=run 且 steps ≥ maxSteps → Run=failed，停
+  if node.interruptBefore 且 kind≠resume → 寫 step(kind=gate, interrupted)；Run=interrupted，通知，停
+  seq++；eventId = "wf_{runId}_{seq}"；寫 workflow_steps(queued)
   job = { eventId, brokerId, sourceType, eventType, payload: { text: 填好的 input, conversationKey }, replyTo, ts }
-  丟進 node.agentId 的 queue（不建 reply_contexts）
+  丟進 node.agentId 的 queue（不建 reply_contexts；retry 用 BullMQ delay）
 
-POST  /internal/events/:id（agent 開始）→ step=running
-PATCH /internal/events/:id（agent 結束）：
-  eventId 是 "wf_" 開頭 → 交給引擎，不跑 reply policy
+POST  /internal/agents/:id/events        { eventId, … }（agent 開始，per-agent token）
+  eventId 是 "wf_" 開頭 → step=running；寫 agent_runs。不寫 webhook_events
+  其他 → 照現狀更新 webhook_events；寫 agent_runs
+PATCH /internal/agents/:id/events/:eventId { status, result }（agent 結束）
+  寫 agent_runs 的結束狀態、成本、耗時
+  eventId 是 "wf_" 開頭 → 交給引擎，不跑 reply policy：
     寫 step.result；合併 state
+    result.unavailable 且 attempt<3 → enqueue(同一個 node, kind=retry)
     blocked[] 不是空的 → Run=interrupted，通知，停
-    暫時性錯誤且 attempt<3 → 延遲重新 enqueue 同一個 node
-    steps ≥ maxSteps → Run=failed
-    選邊 → 下一個 node 就 enqueue，是 END 就 Run=done 並跑 reply policy
-  不是 "wf_" 開頭 → 照現狀跑 reply policy
+    選邊 → 下一個 node 就 enqueue(kind=run)；是 END 就 Run=done，寫 reply_contexts 並 runReply()
+  其他 → 照現狀跑 reply policy
+
+POST /api/workflow-runs/:id/resume { message? } → enqueue(停下來的那個 node, kind=resume, human=message)
 ```
+
+現有的 `POST /internal/events`、`PATCH /internal/events/:eventId` 保留給還沒升級的 agent，行為不變。
 
 引擎和 queue 都在 agent-manager api 裡，不另開 service。「重新 enqueue 要延遲」用 BullMQ 的 `delay`。
 
@@ -268,6 +297,7 @@ PATCH /internal/events/:id（agent 結束）：
 | `POST /api/workflow-runs/:id/resume { message? }` | 中斷後接續（§4.5） |
 | `POST /api/workflow-runs/:id/cancel` | 取消 |
 | `GET /internal/agents/:id/work` | 給 template UI 用，見 §5.5 |
+| `POST /internal/agents/:id/events`、`PATCH /internal/agents/:id/events/:eventId` | agent 回報開始／結束，per-agent token，見 §6 |
 
 **工作流頁**（取代現在的 Routing 頁，沿用 `@vue-flow/core`）：
 
@@ -354,7 +384,7 @@ USER agent
 | 1 | `Dockerfile` 改成純殼：預設腦袋只在沒有 `AGENT_REPO` 也沒掛載時才用；entrypoint 處理 clone | §5.3 |
 | 2 | consumer 取 job 前 `git fetch` ＋ fast-forward 腦袋 | §5.3 |
 | 3 | job 的 `payload.conversationKey` 有值時，優先拿它當對話鍵 | §4.5 接續同一個 Session |
-| 4 | `PATCH /internal/events` 的 `result` 補上 `costUsd`、`durationMs`、`numTurns`（runner 已經有這些值，只是沒送），body 帶 `agentId` | §6 |
+| 4 | 事件回報改打 `/internal/agents/:id/events`（用自己的 `AGENT_API_TOKEN`）；`result` 補上 `costUsd`、`numTurns`（`runOnce()` 已經存了）、`durationMs`（目前只在 stream 的 result 事件裡，`runOnce()` 沒存，要補）、`unavailable`（`report.ts` 的 regex 判斷結果） | §4.7、§6 |
 | 5 | 被擋的動作除了附在 summary，也放進 `result.blocked[]`（`{ tool, summary }`） | §4.5 自動中斷 |
 | 6 | heartbeat 帶上 `brainCommit` 和 `brainPullError` | §6 |
 | 7 | UI 加「我的工作」「指標」 | §5.5 |
@@ -384,8 +414,16 @@ agent_runs { id, agentId, eventId, status /* running | done | failed */,
 // unique(agentId, eventId)
 ```
 
-- `POST /internal/events` 和 `PATCH /internal/events/:id` 現在用的是共用的 `INTERNAL_TOKEN`，agent-manager 不知道是哪個 agent 在回報。template 已經有自己的 `AGENT_API_TOKEN`，改成在 body 帶 `agentId`（或改走 per-agent token 的 `/internal/agents/:id/events`），寫入 `agent_runs`
-- `webhook_events` 維持記錄「webhook 進來那一刻」的稽核用途
+- `POST /internal/events` 和 `PATCH /internal/events/:eventId` 認的是共用 token（`INTERNAL_TOKEN`，或全域的 `AGENT_API_TOKEN` env），agent-manager 不知道是哪個 agent 在回報。per-agent token（`agents.apiToken`）的驗證已經存在於 `/internal/agents/:id/*`（`agent-push.ts`），所以**新增 `POST /internal/agents/:id/events` 和 `PATCH /internal/agents/:id/events/:eventId`**，agentId 由 token 驗證而不是 body 自報，寫入 `agent_runs`
+- `webhook_events` 維持記錄「webhook 進來那一刻」的稽核用途；`wf_` 的 step 不寫進去（舊的 POST 會替沒看過的 eventId 插一筆 `ownerId: "unknown"`，新路由不做這件事）
+
+**agent-manager 要改的地方**（Phase 4）：
+
+| 位置 | 改什麼 |
+|---|---|
+| `agent-push.ts` heartbeat | 現在 `idle` 會被併成 `running`，Fastify schema 也會刪掉沒宣告的欄位。改成保留 `running`／`idle`／`error` 三態，schema 加 `brainCommit`、`brainPullError` |
+| `agents` 表 | 加 `brain_commit`、`brain_pull_error` 欄位；`status` 的值域加 `idle` |
+| 新路由 | 上面的 `/internal/agents/:id/events` |
 
 Agent 監控頁的每張卡：名稱、腦袋 repo ＋ commit、狀態燈、最後一次 heartbeat、queue 深度、24 小時成功／失敗、平均耗時、24 小時成本、目前跑的是哪個 Workflow 的哪一步。
 
@@ -421,10 +459,10 @@ agent-personal-developer:
 | Phase | 內容 | 完成的定義 |
 |---|---|---|
 | **0** | 本文件 ＋ template ADR-0007 | 合併 |
-| **1 介接層** | broker-core 搬進 `packages/`、刪 sandbox-worker（§3.2）、刪 `agents/`（§3.3）、修 README 的過時 Packages 表（`packages/node-agent` 早就不存在） | `pnpm -r test` 全過；webhook → queue → reply 本機跑通；agent-broker README 改好 |
+| **1 介接層** | broker-core 搬進 `packages/`、刪 sandbox-worker（§3.2）、修 README 的過時 Packages 表（`packages/node-agent` 早就不存在）；本機另外 `rm` 掉 `agents/`（§3.3，不在 PR 裡） | `pnpm -r test` 全過；webhook → queue → reply 本機跑通；agent-broker README 改好 |
 | **2 殼** | template §5.6 #1–#6、#9 | 同一個 image 換兩個不同的腦袋 repo 都跑得起來；push 腦袋 repo 後，下一個 job 跑的是新版；preflight 過 |
 | **3 試點** | personal-developer 搬成 `wpbawsed/personal-developer-agent`，接上 agent-manager | webhook → agent-manager → queue → 殼 ＋ 腦袋 → 回覆，端到端跑通 |
-| **4 工作流層** | 資料模型、引擎、API、工作流頁、Agent 監控頁（§4、§6） | 兩個節點的 Workflow 跑通：條件邊、label、中斷 ＋ 接續、`maxSteps`、重試 |
+| **4 工作流層** | 資料模型、引擎、API、工作流頁、Agent 監控頁、`agent_runs`、per-agent 事件路由、heartbeat 三態與腦袋版本（§4、§6） | 兩個節點的 Workflow 跑通：條件邊、label、中斷 ＋ 接續、`maxSteps`、重試 |
 | **5 Agent UI** | template §5.6 #7、#8 | UI 看得到我的工作、指標；能從 agent-manager 連過來核准 |
 | **6 其餘 agent** | agent-teammate 剩下的 8 個 app，一次搬一個，每個搬之前個別決定（sales-agent 排第二批，對話接續已有 `conversations.ts`） | agent-teammate README 標示凍結 |
 
@@ -461,9 +499,11 @@ Phase 1 和 Phase 2 互不依賴，可以同時進行；Phase 3 需要兩者都�
 
 ## 11. 動工前要確認的事實
 
-已查證（2026-10-29，`origin/main` 671f010）：
+已查證（2026-10-29，agent-manager `origin/main` 671f010；template `origin/dev`）：
 
-- `POST /internal/events` 以 eventId upsert `webhook_events`，`PATCH` 只改 `status` 再跑 reply policy；兩者都用共用 `INTERNAL_TOKEN`，沒有 agentId → 所以 §6 另開 `agent_runs`
+- `POST /internal/events` 以 eventId upsert `webhook_events`，`PATCH` 只改 `status` 再跑 reply policy；兩者都只認共用 token，沒有 agentId → 所以 §6 另開 `agent_runs` 與 per-agent 的事件路由
+- heartbeat 把 `idle` 併成 `running`，schema 會刪掉沒宣告的欄位 → §6 列為要改
+- template 的護欄 image（`image/`、`/etc/claude-code`、ADR-0006）在 template 的 `dev` branch，尚未進 `main`
 - 一個 webhook 分流到多條 queue 時共用同一個 eventId（`webhook.ts`：`jobId: eventId`）→ 多個 agent 的 PATCH 會對同一個 eventId 跑 reply policy；`reply_contexts` 一個 eventId 一筆，回覆後刪掉，所以實際只回一次，先到先回。Workflow 的 step 各有自己的 `wf_` eventId，不受影響
 
 還沒查證：
