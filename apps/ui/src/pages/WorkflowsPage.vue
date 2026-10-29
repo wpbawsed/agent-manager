@@ -63,7 +63,8 @@
             <div class="panel-title">節點 <span class="mono">{{ selectedNode.id }}</span></div>
             <div class="form-group">
               <label class="form-label">ID</label>
-              <input :value="selectedNode.id" class="form-input mono" @change="renameNode(($event.target as HTMLInputElement).value)" />
+              <input :value="selectedNode.id" class="form-input mono" @change="renameNode($event.target as HTMLInputElement)" />
+              <div class="form-hint">英文字母開頭，只能用英數、- 與 _</div>
             </div>
             <div class="form-group">
               <label class="form-label">Agent</label>
@@ -172,8 +173,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { workflowsApi } from '@/api'
 import WorkflowGraphView, { type Selection } from '@/components/WorkflowGraphView.vue'
 import { END, useWorkflowsStore, type WorkflowDetail, type WorkflowGraph, type EdgeWhen } from '@/stores/workflows'
@@ -214,9 +215,25 @@ function confirmDiscard() {
   return !dirty.value || confirm('有未儲存的修改，確定放棄？')
 }
 
+// Leaving the page (sidebar, Runs / Routing links) or closing the tab with unsaved edits asks first.
+onBeforeRouteLeave(() => confirmDiscard())
+const beforeUnload = (e: BeforeUnloadEvent) => {
+  if (dirty.value) e.preventDefault()
+}
+window.addEventListener('beforeunload', beforeUnload)
+onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
+
+let openSeq = 0 // only the latest open() may apply its response
 async function open(id: string) {
-  if (id === currentId.value || !confirmDiscard()) return
+  if (id === currentId.value) return
+  if (!confirmDiscard()) {
+    // keep the URL on what's actually shown
+    router.replace({ query: currentId.value ? { id: currentId.value } : {} })
+    return
+  }
+  const seq = ++openSeq
   const { data } = await workflowsApi.get(id)
+  if (seq !== openSeq) return
   const wf = data as WorkflowDetail
   currentId.value = wf.id
   currentVersion.value = wf.version
@@ -255,14 +272,24 @@ function addNode() {
   dirty.value = true
 }
 
-function renameNode(next: string) {
+const NODE_ID = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/ // same rule as the API (workflow/graph.ts)
+
+function renameNode(input: HTMLInputElement) {
   const g = draft.value!.graph
   const node = selectedNode.value
-  if (!node || !next || next === node.id) return
-  if (g.nodes.some((n) => n.id === next) || next === END) {
-    error.value = `節點 ID「${next}」已存在或是保留字`
+  const next = input.value.trim()
+  if (!node || next === node.id) return
+  const problem = !NODE_ID.test(next)
+    ? `節點 ID「${next}」不合法：英文字母開頭，只能用英數、- 與 _`
+    : g.nodes.some((n) => n.id === next) || next === END
+      ? `節點 ID「${next}」已存在或是保留字`
+      : ''
+  if (problem) {
+    error.value = problem
+    input.value = node.id // the field shows what's actually there
     return
   }
+  error.value = ''
   const prev = node.id
   node.id = next
   for (const e of g.edges) {

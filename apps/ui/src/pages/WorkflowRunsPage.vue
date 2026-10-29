@@ -86,6 +86,14 @@ watch([workflowId, status], () => {
   router.replace({ query: { ...(workflowId.value && { workflowId: workflowId.value }), ...(status.value && { status: status.value }) } })
   load()
 })
+// The URL can change underneath us too (sidebar "Runs" clears the query, browser back).
+watch(
+  () => route.query,
+  (q) => {
+    workflowId.value = typeof q.workflowId === 'string' ? q.workflowId : ''
+    status.value = typeof q.status === 'string' ? q.status : ''
+  },
+)
 
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {

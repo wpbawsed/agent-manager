@@ -1,6 +1,6 @@
 <template>
   <div class="run-page">
-    <div v-if="!run" class="empty">{{ notFound ? '找不到這個 Run' : '載入中...' }}</div>
+    <div v-if="!run" class="empty">{{ notFound ? '找不到這個 Run' : loadError || '載入中...' }}</div>
     <template v-else>
       <div class="run-head">
         <router-link :to="`/workflow-runs?workflowId=${run.workflowId}`" class="back">← Runs</router-link>
@@ -13,6 +13,7 @@
         <div style="flex:1;" />
         <button v-if="run.status === 'running' || run.status === 'interrupted'" class="btn btn-danger btn-sm" :disabled="busy" @click="cancel">取消 Run</button>
       </div>
+      <div v-if="actionError && run.status !== 'interrupted'" class="alert alert-error run-alert">{{ actionError }}</div>
 
       <div v-if="run.error" class="alert alert-error run-alert">{{ run.error }}</div>
 
@@ -68,7 +69,9 @@
                 <pre>{{ s.result.summary }}</pre>
               </div>
               <div v-if="s.result?.mrUrl" class="block">
-                <a :href="s.result.mrUrl" target="_blank" rel="noopener">{{ s.result.mrUrl }}</a>
+                <!-- reported by the agent: only link real http(s) URLs (no javascript: etc.) -->
+                <a v-if="isHttpUrl(s.result.mrUrl)" :href="s.result.mrUrl" target="_blank" rel="noopener noreferrer">{{ s.result.mrUrl }}</a>
+                <span v-else class="mono">{{ s.result.mrUrl }}</span>
               </div>
               <div v-if="s.result?.error" class="block">
                 <div class="block-title">錯誤</div>
@@ -102,6 +105,8 @@ const agents = useAgentsStore()
 
 const run = ref<RunDetail | null>(null)
 const notFound = ref(false)
+const loadError = ref('')
+const isHttpUrl = (u: string) => /^https?:\/\//i.test(u)
 const message = ref('')
 const busy = ref(false)
 const actionError = ref('')
@@ -135,8 +140,10 @@ async function load() {
     const { data } = await runsApi.get(route.params.id as string)
     run.value = data
     notFound.value = false
+    loadError.value = ''
   } catch (e: unknown) {
     if ((e as { response?: { status?: number } }).response?.status === 404) notFound.value = true
+    else loadError.value = '載入失敗，稍後會自動重試'
   }
 }
 
@@ -157,9 +164,12 @@ async function resume() {
 async function cancel() {
   if (!confirm('確定取消這個 Run？還沒開始的步驟不會執行。')) return
   busy.value = true
+  actionError.value = ''
   try {
     await runsApi.cancel(run.value!.id)
     await load()
+  } catch (e: unknown) {
+    actionError.value = (e as { response?: { data?: { error?: string } } }).response?.data?.error ?? '取消失敗'
   } finally {
     busy.value = false
   }

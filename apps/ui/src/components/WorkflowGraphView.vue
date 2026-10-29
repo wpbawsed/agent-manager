@@ -11,6 +11,7 @@
       :min-zoom="0.3"
       :max-zoom="1.6"
       :delete-key-code="null"
+      :connection-mode="ConnectionMode.Strict"
       @connect="onConnect"
       @node-click="onNodeClick"
       @edge-click="onEdgeClick"
@@ -49,7 +50,7 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
-import { VueFlow, Handle, Position, MarkerType, useVueFlow, type Connection, type Edge, type Node } from '@vue-flow/core'
+import { VueFlow, Handle, Position, MarkerType, ConnectionMode, useVueFlow, type Connection, type Edge, type Node } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import { END, whenLabel, type WorkflowGraph } from '@/stores/workflows'
 
@@ -167,6 +168,8 @@ const flowEdges = computed<Edge[]>(() => [
 
 function onConnect(c: Connection) {
   if (!props.editable || !c.source || !c.target) return
+  // Strict mode already pairs source→target handles; these are the remaining nonsense connections.
+  if (c.target === START || c.source === END || c.source === c.target) return
   emit('connect', c.source === START ? '' : c.source, c.target)
 }
 
@@ -176,7 +179,7 @@ function onNodeClick({ node }: { node: Node }) {
 }
 
 function onEdgeClick({ edge }: { edge: Edge }) {
-  if (!edge.id.startsWith('e')) return
+  if (!/^e\d+$/.test(edge.id)) return // not the dashed START → entry edge
   emit('select', { kind: 'edge', index: Number(edge.id.slice(1)) })
 }
 
