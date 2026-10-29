@@ -5,23 +5,19 @@ import {
   getAgent,
   updateAgent,
   deleteAgent,
-  startAgent,
-  stopAgent,
   getAgentIntegration,
 } from "../services/agents.js";
 
 export default async function agentsRoutes(app: FastifyInstance) {
   // POST /api/agents — Create agent
-  // type=local → response includes `integration` (push API endpoints, token,
-  //              ready-to-run source files for the user's machine)
-  // type=cloud → response includes `deploy` (Cloudflare Sandbox init result)
+  // Response includes `integration` (push API endpoints, token, ready-to-run
+  // source files). The manager never deploys or starts agents itself.
   app.post<{
     Body: {
       name: string;
       description?: string;
       instruction?: string;
       queueId?: string;
-      runtimeCmd?: string;
       type?: "local" | "cloud";
       endpoint?: string;
     };
@@ -37,7 +33,6 @@ export default async function agentsRoutes(app: FastifyInstance) {
             description: { type: "string" },
             instruction: { type: "string" },
             queueId:     { type: "string" },
-            runtimeCmd:  { type: "string" },
             type:        { type: "string", enum: ["local", "cloud"] },
             endpoint:    { type: "string" },
           },
@@ -54,7 +49,6 @@ export default async function agentsRoutes(app: FastifyInstance) {
       return reply.code(201).send({
         ...result.agent,
         integration: result.integration,
-        deploy: result.deploy,
       });
     },
   );
@@ -77,7 +71,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
     },
   );
 
-  // GET /api/agents/:id/integration — Re-issue onboarding material (local only)
+  // GET /api/agents/:id/integration — Re-issue onboarding material
   app.get<{ Params: { id: string } }>(
     "/:id/integration",
     { preHandler: [app.authenticate] },
@@ -85,9 +79,7 @@ export default async function agentsRoutes(app: FastifyInstance) {
       const user = req.user as { sub: string };
       const integration = await getAgentIntegration(app.db, req.params.id, user.sub);
       if (!integration) {
-        return reply
-          .code(404)
-          .send({ error: "Agent not found or not a local agent" });
+        return reply.code(404).send({ error: "Agent not found" });
       }
       return integration;
     },
@@ -119,30 +111,6 @@ export default async function agentsRoutes(app: FastifyInstance) {
       const ok = await deleteAgent(app.db, req.params.id, user.sub);
       if (!ok) return reply.code(404).send({ error: "Agent not found" });
       return reply.code(204).send();
-    },
-  );
-
-  // POST /api/agents/:id/start — Deploy/start a cloud agent (400 for local)
-  app.post<{ Params: { id: string } }>(
-    "/:id/start",
-    { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const user = req.user as { sub: string };
-      const result = await startAgent(app.db, req.params.id, user.sub);
-      if (!result.ok) return reply.code(400).send({ error: result.error });
-      return result;
-    },
-  );
-
-  // POST /api/agents/:id/stop — Stop a cloud agent (400 for local)
-  app.post<{ Params: { id: string } }>(
-    "/:id/stop",
-    { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const user = req.user as { sub: string };
-      const result = await stopAgent(app.db, req.params.id, user.sub);
-      if (!result.ok) return reply.code(400).send({ error: result.error });
-      return result;
     },
   );
 }

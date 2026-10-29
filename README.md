@@ -1,33 +1,38 @@
 # Agent Manager
 
-A self-hosted platform for managing AI Agents, webhook brokers, queues, and routing rules. Built on a **Broker → Router → Queue → Agent** architecture — think SNS/SQS for your AI Agents.
+A self-hosted control plane for AI agents: webhook brokers, routing rules, queues, and the agent registry. Built on a **Broker → Routing Rule → Queue → Agent** architecture — think SNS/SQS for your AI agents.
+
+The manager never runs agents itself. Each agent is its own runtime (normally a [template-claude-agent](https://github.com/wpbawsed/template-claude-agent) container) that consumes its queue and reports back through the push APIs.
+
+Where this is heading (workflow layer, shared agent shell, migration phases): [`docs/system-integration-design.md`](docs/system-integration-design.md).
 
 ## Architecture
 
 ```
-Webhook Event (Jira / Railway / Slack / ...)
+Webhook Event (Jira / Slack / GitHub / LINE / Notion / Railway)
     │
     ▼
-Broker          ← receives webhooks, normalizes to AgentEvent
+Broker          ← receives webhooks, normalizes to AgentEvent (apps/api/src/normalizers)
     │
     ▼
-Routing Rule    ← filters by eventTypes (allowlist), links Broker → Queue
+Routing Rule    ← filters by eventType / conditions, links Broker → Queue, carries the reply policy
     │
     ▼
 Queue           ← independent BullMQ queue (like SQS)
     │
     ▼
-Agent           ← 1:1 consumer, runs Claude Code CLI with your instruction
+Agent           ← 1:1 consumer, runs on its own (local machine or cloud container)
+    │
+    ▼ PATCH /internal/events/:eventId
+Reply policy    ← posts the result back to Slack / Jira / Notion / LINE (apps/api/src/lib/broker-core.ts)
 ```
 
-## Packages
+## Apps
 
-| Package | Description |
+| App | Description |
 |---|---|
-| `packages/api` | Fastify REST API + Drizzle ORM + PostgreSQL |
-| `packages/ui` | Vue 3 + Vite + Naive UI frontend |
-| `packages/node-agent` | Node.js daemon that manages Agent processes |
-| `packages/channels` | Shared types / channel definitions |
+| `apps/api` | Fastify REST API + Drizzle ORM + PostgreSQL + BullMQ; webhook ingress, reply dispatch |
+| `apps/ui` | Vue 3 + Vite + Pinia frontend |
 
 ## Tech Stack
 
@@ -35,156 +40,82 @@ Agent           ← 1:1 consumer, runs Claude Code CLI with your instruction
 |---|---|
 | API | Fastify, Drizzle ORM, PostgreSQL, Redis |
 | Queue | BullMQ |
-| Frontend | Vue 3, Vite, Naive UI, Pinia, Vue Router, @vue-flow/core |
-| Agent runtime | Claude Code CLI |
-| Auth | JWT (jose) |
-| Real-time | SSE (Server-Sent Events) |
-| Infra | Docker Compose (local), Cloudflare Workers (webhook receivers) |
+| Frontend | Vue 3, Vite, Pinia, Vue Router |
+| Auth | JWT (`@fastify/jwt`) for users; per-agent `apiToken` for the push APIs |
+| Infra | Docker Compose (local), Railway (deploy) |
 
 ## Quick Start
 
-### Prerequisites
-
-- Node.js 20+
-- pnpm 9+
-- Docker + Docker Compose
-
-### 1. Clone and install
+Prerequisites: Node.js 20+, pnpm 9+, Docker.
 
 ```bash
-git clone <repo-url>
-cd agent-manager
 pnpm install
-```
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env with your values
-```
-
-Required env vars:
-
-```env
-JWT_SECRET=<random string>
-DATABASE_URL=postgresql://agent:agent@localhost:5432/agent_manager
-REDIS_URL=redis://localhost:6379
-INTERNAL_TOKEN=<random string for node-agent communication>
-NODE_AGENT_URL=http://localhost:9090
-```
-
-### 3. Start infrastructure
-
-```bash
+cp .env.example .env          # fill in JWT_SECRET, INTERNAL_TOKEN
 docker compose up postgres redis -d
+pnpm run dev                  # API on :8080, UI on :3000
 ```
 
-### 4. Run migrations
+Pending DB migrations run automatically when the API container starts (`apps/api/src/db/migrate.ts`).
 
-```bash
-cd packages/api
-pnpm run migrate
-```
-
-### 5. Start development servers
-
-```bash
-# All at once
-pnpm run dev
-
-# Or individually
-pnpm run dev:api    # API server on :8080
-pnpm run dev:ui     # UI on :3000
-```
-
-### Docker (full stack)
+Full stack in Docker:
 
 ```bash
 docker compose up --build
 ```
 
-UI will be available at `http://localhost:3000`.
+UI at `http://localhost:3000`.
+
+## Tests
+
+```bash
+pnpm --filter @agent-manager/api run test:unit   # broker-core, no server needed
+pnpm --filter @agent-manager/api run test        # integration, needs the API on :8080
+```
 
 ## UI Pages
 
 | Page | Path | Description |
 |---|---|---|
 | Login / Register | `/login` `/register` | JWT auth |
-| Agents | `/agents` | List + create + start/stop Agents |
-| Agent Detail | `/agents/:id` | Overview, Instruction (CLAUDE.md), Logs, Docs, Skills, Variables, MCP, Repos |
+| Agents | `/agents` | Register agents, online status from heartbeats, setup material (token, env, push endpoints) |
 | Queues | `/queues` | Manage BullMQ queues |
-| Brokers | `/brokers` | Webhook receivers (Jira, Slack, Notion) |
-| Routing | `/routing` | Visual flow: Broker → Queue → Agent with eventTypes filters |
-| Logs | `/logs` | Real-time SSE log stream + agent log history |
-| Playground | `/playground` | Chat with any Agent via SSE |
-| Admin | `/admin` | User management (admin role required) |
+| Brokers | `/brokers` | Webhook receivers |
+| Routing | `/routing` | Broker → Queue rules, eventType filters, reply policy |
+| Logs | `/logs` | Agent log history and incoming webhook events |
+| Playground | `/playground` | One-shot prompt against an agent's instruction (SSE) |
+| Admin | `/admin` | User management and stats (admin role) |
 
 ## API
 
-Base URL: `http://localhost:8080/api`
-
-All routes except `/auth/*` require `Authorization: Bearer <token>`.
-
-| Method | Path | Description |
+| Prefix | Auth | Purpose |
 |---|---|---|
-| POST | `/auth/register` | Register user |
-| POST | `/auth/login` | Login → JWT |
-| GET | `/auth/me` | Current user |
-| GET/POST | `/agents` | List / Create agent |
-| GET/PATCH/DELETE | `/agents/:id` | Get / Update / Delete agent |
-| POST | `/agents/:id/start` | Start agent process |
-| POST | `/agents/:id/stop` | Stop agent process |
-| GET | `/agents/:id/logs/stream` | SSE log stream |
-| GET/POST | `/queues` | List / Create queue |
-| DELETE | `/queues/:id` | Delete queue |
-| GET/POST | `/brokers` | List / Create broker |
-| PATCH/DELETE | `/brokers/:id` | Update / Delete broker |
-| POST | `/brokers/:id/activate` | Activate broker |
-| GET/POST | `/routing` | List / Create routing rule |
-| DELETE | `/routing/:id` | Delete rule |
-| POST | `/webhook/:brokerId` | Webhook entry point |
+| `POST /:tenant/:sourceType/:sourceId` | broker secret | Webhook ingress |
+| `/api/auth` | — | Register / login / me |
+| `/api/agents` | user JWT | Agent CRUD, `GET /:id/integration` setup material, agent files |
+| `/api/queues`, `/api/brokers`, `/api/routing` | user JWT | Queue / broker / routing rule CRUD |
+| `/api/logs`, `/api/playground`, `/api/admin` | user JWT | Logs, playground run, admin |
+| `/internal/agents/:id/{heartbeat,metrics,logs}` | agent `apiToken` | Push APIs every agent calls |
+| `/internal/events` | `INTERNAL_TOKEN` | Event start (`POST`) / finish (`PATCH /:eventId`, triggers the reply policy) |
 
 ## Database Schema
 
 | Table | Description |
 |---|---|
-| `users` | Auth users (email, password hash, role) |
+| `users` | Auth users |
 | `queues` | BullMQ queue definitions |
-| `agents` | Agent configs (name, instruction, queueId, status) |
-| `brokers` | Webhook broker configs (type, credentials, webhookUrl) |
-| `routing_rules` | Broker → Queue links with eventTypes filter |
+| `agents` | Agent registry (name, queue 1:1, type local/cloud, apiToken, status, last heartbeat) |
+| `agent_metrics` | Metric snapshots pushed by agents |
+| `agent_logs` | Agent log history |
+| `brokers` | Webhook broker configs |
+| `routing_rules` | Broker → Queue links with filters and reply policy |
 | `webhook_events` | Incoming webhook event log |
-| `agent_logs` | Agent execution log history |
+| `reply_contexts` | Where/how to reply for an in-flight event; deleted after the reply fires |
 
 ## Workflow Example
 
-1. **Create a Queue** — `my-jira-queue`
-2. **Create a Broker** — type `jira`, paste your Jira webhook secret
-3. **Create a Routing Rule** — link `jira-broker → my-jira-queue`, filter `issue_created,issue_updated`
-4. **Create an Agent** — select `my-jira-queue`, write instruction (your CLAUDE.md prompt)
-5. **Start the Agent** — it connects to the queue and waits for events
-6. **Open a Jira card** → webhook fires → event routed → Agent runs Claude Code CLI automatically
-
-## Deployment
-
-### Cloudflare Workers (webhook receivers)
-
-```bash
-pnpm run deploy:workers
-```
-
-### Terraform (infrastructure)
-
-```bash
-pnpm run tf:init
-pnpm run tf:plan
-pnpm run tf:apply
-```
-
-## Development Notes
-
-- **DB source of truth**: PostgreSQL (via Drizzle ORM)
-- **Agent processes**: Managed by `packages/node-agent` (HTTP API on `:9090`)
-- **Logs streaming**: API proxies SSE from node-agent to UI
-- **Agent files** (CLAUDE.md, Skills, Docs, MCP config, Variables, Repos): stored under `agents/{name}/` directory
+1. Create a **Queue** — `my-jira-queue`
+2. Create a **Broker** — type `jira`
+3. Create a **Routing Rule** — `jira-broker → my-jira-queue`, filter `issue_created`, set a reply policy
+4. Register an **Agent** on `my-jira-queue` and copy its setup material
+5. Run the agent with that env (e.g. a template-claude-agent container) — it heartbeats in and consumes the queue
+6. Open a Jira issue → webhook → routed → agent runs → result posted back to the issue

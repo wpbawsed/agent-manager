@@ -25,10 +25,9 @@ export const queues = pgTable("queues", {
 
 // ── agents ─────────────────────────────────────────────────────────────────
 // Registry entry for a worker that consumes from one queue.
-// type=local  → runs on the user's machine (Claude Code CLI + claude channel);
-//               the agent self-reports via /internal/agents/:id/* push APIs.
-// type=cloud  → deployed to Cloudflare Sandbox by the manager; the deployed
-//               code has the push calls built in.
+// Every agent runs its own runtime and self-reports via the
+// /internal/agents/:id/* push APIs; the manager never starts or stops it.
+// type only records where it runs: local (the user's machine) | cloud.
 export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id")
@@ -38,7 +37,6 @@ export const agents = pgTable("agents", {
   description: text("description"),
   instruction: text("instruction"),
   queueId: text("queue_id").references(() => queues.id),  // 1:1, nullable until assigned
-  runtimeCmd: text("runtime_cmd"),   // command to start the worker process (cloud only)
   type: text("type").notNull().default("local"),          // local | cloud
   endpoint: text("endpoint"),        // optional URL of a local agent (informational)
   apiToken: text("api_token").unique().notNull(),

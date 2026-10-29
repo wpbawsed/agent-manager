@@ -69,23 +69,8 @@
             </td>
             <td>
               <div class="action-group">
-                <!-- cloud agents: manager controls lifecycle -->
-                <template v-if="a.type === 'cloud'">
-                  <button
-                    v-if="a.status !== 'running'"
-                    class="btn btn-ghost btn-sm"
-                    :disabled="starting === a.id"
-                    @click="startAgent(a.id)"
-                  >▷ Deploy</button>
-                  <button
-                    v-else
-                    class="btn btn-ghost btn-sm"
-                    :disabled="stopping === a.id"
-                    @click="stopAgent(a.id)"
-                  >⏹ Stop</button>
-                </template>
-                <!-- local agents: self-managed; manager only hands out the setup material -->
-                <button v-else class="btn btn-ghost btn-sm" @click="openIntegration(a.id)">⚙ Setup</button>
+                <!-- every agent runs its own runtime; the manager only hands out the setup material -->
+                <button class="btn btn-ghost btn-sm" @click="openIntegration(a.id)">⚙ Setup</button>
                 <button class="btn btn-danger btn-sm" @click="deleteAgent(a.id)">Delete</button>
               </div>
             </td>
@@ -118,7 +103,7 @@
                 <input v-model="form.type" type="radio" value="cloud" />
                 <div>
                   <div class="type-option-title">☁ Cloud</div>
-                  <div class="type-option-desc">部署到 Cloudflare Sandbox。部署的程式碼已內建回報邏輯，由 Manager 控制啟停。</div>
+                  <div class="type-option-desc">跑在雲端（例如 Railway 上的 template-claude-agent 容器）。由它自己的部署啟停，用同一組回報 API 回報。</div>
                 </div>
               </label>
             </div>
@@ -165,7 +150,6 @@
           <button class="modal-close" @click="integration = null">✕</button>
         </div>
         <div class="modal-body">
-          <div v-if="deployNote" class="alert alert-error">{{ deployNote }}</div>
 
           <div class="form-group">
             <label class="form-label">Agent ID / Token</label>
@@ -226,11 +210,8 @@ const queues = useQueuesStore()
 const showCreate = ref(false)
 const creating = ref(false)
 const createError = ref('')
-const starting = ref('')
-const stopping = ref('')
 const integration = ref<AgentIntegration | null>(null)
 const activeFile = ref('index.js')
-const deployNote = ref('')
 
 const form = ref({ name: '', queueId: '', instruction: '', type: 'local' as 'local' | 'cloud', endpoint: '' })
 
@@ -243,23 +224,12 @@ function queueName(queueId?: string) {
   return queues.queues.find((q) => q.id === queueId)?.name ?? queueId.slice(0, 8)
 }
 
-async function startAgent(id: string) {
-  starting.value = id
-  try { await agents.start(id) } catch { /* ignore */ } finally { starting.value = '' }
-}
-
-async function stopAgent(id: string) {
-  stopping.value = id
-  try { await agents.stop(id) } catch { /* ignore */ } finally { stopping.value = '' }
-}
-
 async function deleteAgent(id: string) {
   if (!confirm('確定要刪除此 Agent？')) return
   await agents.delete(id)
 }
 
 async function openIntegration(id: string) {
-  deployNote.value = ''
   try {
     integration.value = await agents.integration(id)
     activeFile.value = 'index.js'
@@ -296,14 +266,9 @@ async function createAgent() {
     })
     form.value = { name: '', queueId: '', instruction: '', type: 'local', endpoint: '' }
     showCreate.value = false
-    if (created.integration) {
-      // local agent → show onboarding material immediately
-      integration.value = created.integration
-      activeFile.value = 'index.js'
-      deployNote.value = ''
-    } else if (created.deploy && !created.deploy.ok) {
-      alert(`Agent 已建立，但 Cloudflare Sandbox 部署失敗：${created.deploy.error ?? 'unknown'}\n可稍後在列表按 Deploy 重試。`)
-    }
+    // show onboarding material immediately
+    integration.value = created.integration
+    activeFile.value = 'index.js'
   } catch (e: unknown) {
     const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
     createError.value = msg ?? '建立失敗'

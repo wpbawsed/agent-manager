@@ -56,7 +56,6 @@ test("POST /api/agents — create agent", async () => {
       name: "test-agent",
       description: "Integration test agent",
       instruction: "You are a test assistant.",
-      runtimeCmd: "echo hello",
     },
     token,
   );

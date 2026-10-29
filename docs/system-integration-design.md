@@ -8,7 +8,7 @@
 
 ## 0. 結論
 
-1. **agent-manager 是主體**，同時是介接層與工作流層。agent-broker 的 `core` 併進來，`sdk` 刪掉，`sandbox-worker` 移除。
+1. **agent-manager 是主體**，同時是介接層與工作流層。agent-broker 的回覆邏輯併進 `apps/api`，`sdk` 刪掉，`sandbox-worker` 移除。
 2. **工作流照 LangGraph 的模型設計**：Workflow 是一張圖，節點是 agent，邊依結果分支，每次執行的狀態一步一個 checkpoint 存在 PG，可以中斷等人。推進圖的是 agent-manager，**agent 不知道自己在工作流裡**。不引入 LangGraph 套件。
 3. **template-claude-agent 變成共用的殼**（base image）。每個 agent 是一個只放腦袋的 repo，容器開工前 `git pull`，所以 push 到腦袋 repo 就等於更新 agent。
 4. **agent-teammate 凍結**。試點只搬 personal-developer，其餘 8 個 app 之後一個一個搬。
@@ -38,7 +38,7 @@
    │ webhook                                     ▲ 回覆（reply policy）
    ▼                                             │
 ┌─ 介接層：agent-manager api ──────────────────────────────────────┐
-│ Broker → normalizers → AgentEvent         packages/broker-core   │
+│ Broker → normalizers → AgentEvent     apps/api/src/lib/broker-core│
 │                     │                     (dispatchReply 等)     │
 │              Routing Rule                                         │
 │          ┌──────────┴───────────┐                                 │
@@ -64,12 +64,15 @@
 
 | 來源 | 去向 |
 |---|---|
-| `agent-broker/packages/core`（`reply.js`、`schema.js`、Notion helpers） | **`agent-manager/packages/broker-core`**，pnpm workspace 套件；`apps/api` 的依賴從 `@wpbawsed/agent-broker-core@^0.1.1` 改成 `workspace:*` |
-| `apps/api/src/types/agent-broker-core.d.ts` | 搬家時順便把 broker-core 改成 TypeScript 或補 `.d.ts`，這個 ambient 宣告就可以刪掉 |
+| `agent-broker/packages/core/src/reply.js` 裡 manager 用得到的部分：`dispatchReply`（Slack／Jira／Notion 留言／LINE／webhook）、`transitionJiraIssue`、`parseReplyChannel` | **`apps/api/src/lib/broker-core.ts`**，改寫成 TypeScript，單元測試在 `apps/api/tests/broker-core.test.ts`。`apps/api` 拿掉 `@wpbawsed/agent-broker-core` 依賴與 `src/types/agent-broker-core.d.ts` |
+| `reply.js` 裡給 agent 用的 helper：`setSlackReaction`、`updateNotionPage`、`fetchNotionPage`、`fetchNotionBlocks` | **不搬**。manager 沒用到，agent 端的事交給 template |
+| `agent-broker/packages/core/src/schema.js`（`BrokerEventSchema`，zod） | **不搬**。manager 的事件格式是 `normalizers/types.ts` 的 `AgentEvent`，這份是舊格式，搬了反而有兩個定義 |
 | `agent-broker/packages/sdk`（BullMQConsumer、cf-consumer、health） | **刪除**。目前沒有人用，template 自己的 `consumer.ts` 直接用 bullmq，而且刻意不用 schema 驗整包（teammate 就是被 zod 刪掉 `brokerId` 才出事） |
 | `agent-broker/examples/devops-agent` | 刪除 |
 | npm 套件 `@wpbawsed/agent-broker-core` | 不再發佈 |
 | GitHub repo `agent-broker` | README 加「已併入 agent-manager」；**archive 由使用者自己操作** |
+
+**為什麼放 `apps/api` 而不是 `packages/broker-core`**（2026-10-29 決定，修正本文原先的寫法）：api 的 Dockerfile 以 `apps/api` 為 build context、用 npm 安裝依賴，Railway 也是這樣建置（ff89dfd 就是因為 build context 看不到兄弟目錄，才改用 npm 套件）。`workspace:*` 依賴在這個 context 解析不到，要改就得把 build context 搬到 repo 根目錄、Railway 的 Root Directory 一起改。只有 api 用到這段程式，放進 api 最省事；哪天第二個 app 也要用再抽成 package。
 
 以後真的出現「不是 template 的第三方 agent」，再從 template 的 `consumer.ts` 抽一份出來，不從舊 sdk 復活。
 
@@ -84,8 +87,8 @@ Cloudflare Sandbox 方向在 2026-07-04 已經否決（`sandbox-migration-todo.m
 | `apps/sandbox-worker/` | 刪除 |
 | 根 `package.json` 的 `deploy:sandbox` | 刪除 |
 | `docker-compose.yml` 的 `SANDBOX_WORKER_URL`、`SANDBOX_INTERNAL_TOKEN` | 刪除 |
-| `apps/api/src/routes/agents.ts`、`agent-push.ts`、`services/agents.ts`、`services/agent-template.ts` | 拿掉 sandbox 分支；`type=cloud` 不再代表「manager 幫你部署到 Sandbox」，改成單純標示「這個 agent 跑在雲端」 |
-| `apps/api/src/db/schema.ts` 的 `agents.runtimeCmd` 與 `type=cloud` 註解 | `runtimeCmd` 只有 Sandbox 用，用 migration 移除；註解改寫 |
+| `apps/api/src/routes/agents.ts`、`agent-push.ts`、`services/agents.ts`、`services/agent-template.ts` | 拿掉 sandbox 分支與 `POST /api/agents/:id/start`、`/stop`（manager 不再啟停任何 agent）；`type=cloud` 改成單純標示「這個 agent 跑在雲端」；local、cloud 都拿得到設定資料 |
+| `apps/api/src/db/schema.ts` 的 `agents.runtimeCmd` 與 `type=cloud` 註解 | 從 Drizzle schema 拿掉、註解改寫。**DB 欄位暫不 drop**：api 容器啟動時會自動跑 migration，合併就等於在 prod drop 欄位，需另外確認後再加 migration。欄位可為 null，留著不影響 |
 | `apps/ui/src/pages/AgentsPage.vue`、`apps/ui/src/stores/agents.ts`（`runtimeCmd`、`deploy`） | 拿掉 Sandbox 部署相關 UI 與 store |
 | `apps/api/tests/agents.test.mjs` | 拿掉 sandbox 相關測試 |
 | `agent-push.ts` 開頭講 sandbox-worker 代轉的註解 | 改寫 |
@@ -299,7 +302,7 @@ POST /api/workflow-runs/:id/resume { message? } → enqueue(停下來的那個 n
 | `GET /internal/agents/:id/work` | 給 template UI 用，見 §5.5 |
 | `POST /internal/agents/:id/events`、`PATCH /internal/agents/:id/events/:eventId` | agent 回報開始／結束，per-agent token，見 §6 |
 
-**工作流頁**（取代現在的 Routing 頁，沿用 `@vue-flow/core`）：
+**工作流頁**（取代現在的 Routing 頁；畫布要新引入 `@vue-flow/core`，目前 UI 只有 Vue、Pinia、Vue Router、axios）：
 
 - 左邊：Workflow 列表。中間：畫布，從右邊的 agent 清單把 agent 拖進來就是加一個節點，畫線就是加一條邊，點邊設 `when`。右邊：節點設定（輸入範本、labels、interruptBefore）
 - Broker 和 Routing Rule 也畫在同一張畫布的左側，當成 `START`，可以看出「哪個 webhook 進哪個 Workflow 或哪條 queue」
@@ -459,7 +462,7 @@ agent-personal-developer:
 | Phase | 內容 | 完成的定義 |
 |---|---|---|
 | **0** | 本文件 ＋ template ADR-0007 | 合併 |
-| **1 介接層** | broker-core 搬進 `packages/`、刪 sandbox-worker（§3.2）、修 README 的過時 Packages 表（`packages/node-agent` 早就不存在）；本機另外 `rm` 掉 `agents/`（§3.3，不在 PR 裡） | `pnpm -r test` 全過；webhook → queue → reply 本機跑通；agent-broker README 改好 |
+| **1 介接層** | 回覆邏輯搬進 `apps/api/src/lib/broker-core.ts`（§3.1）、刪 sandbox-worker（§3.2）、重寫過時的 README；本機另外 `rm` 掉 `agents/`（§3.3，不在 PR 裡） | api 型別檢查不新增錯誤、broker-core 單元測試全過、UI build 過；agent-broker README 改好 |
 | **2 殼** | template §5.6 #1–#6、#9 | 同一個 image 換兩個不同的腦袋 repo 都跑得起來；push 腦袋 repo 後，下一個 job 跑的是新版；preflight 過 |
 | **3 試點** | personal-developer 搬成 `wpbawsed/personal-developer-agent`，接上 agent-manager | webhook → agent-manager → queue → 殼 ＋ 腦袋 → 回覆，端到端跑通 |
 | **4 工作流層** | 資料模型、引擎、API、工作流頁、Agent 監控頁、`agent_runs`、per-agent 事件路由、heartbeat 三態與腦袋版本（§4、§6） | 兩個節點的 Workflow 跑通：條件邊、label、中斷 ＋ 接續、`maxSteps`、重試 |
