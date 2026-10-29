@@ -55,7 +55,7 @@ docker compose up postgres redis -d
 pnpm run dev                  # API on :8080, UI on :3000
 ```
 
-Pending DB migrations run automatically when the API container starts (`apps/api/src/db/migrate.ts`).
+Pending DB migrations run automatically when the API container starts (`apps/api/src/db/migrate.ts`). With `pnpm run dev` nothing migrates — on a fresh database run `pnpm --filter @agent-manager/api run db:migrate` first.
 
 Full stack in Docker:
 
@@ -96,6 +96,7 @@ pnpm --filter @agent-manager/api run test        # integration, needs the API on
 | `/api/logs`, `/api/playground`, `/api/admin` | user JWT | Logs, playground run, admin |
 | `/internal/agents/:id/{heartbeat,metrics,logs}` | agent `apiToken` | Push APIs every agent calls |
 | `/internal/events` | `INTERNAL_TOKEN` | Event start (`POST`) / finish (`PATCH /:eventId`, triggers the reply policy) |
+| `/internal/agent-heartbeat`, `/internal/agent-log` | `INTERNAL_TOKEN` | Legacy, superseded by `/internal/agents/:id/*`; nothing in this repo calls them |
 
 ## Database Schema
 
