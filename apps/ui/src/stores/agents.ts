@@ -17,7 +17,6 @@ export interface Agent {
   instruction?: string
   queueId?: string
   queueName?: string
-  runtimeCmd?: string
   type: 'local' | 'cloud'
   endpoint?: string
   apiToken: string
@@ -29,8 +28,7 @@ export interface Agent {
 }
 
 export type CreatedAgent = Agent & {
-  integration: AgentIntegration | null
-  deploy: { ok: boolean; error?: string } | null
+  integration: AgentIntegration
 }
 
 export const useAgentsStore = defineStore('agents', {
@@ -47,7 +45,7 @@ export const useAgentsStore = defineStore('agents', {
     },
     async create(payload: Record<string, unknown>): Promise<CreatedAgent> {
       const { data } = await agentsApi.create(payload)
-      const { integration, deploy, ...agent } = data as CreatedAgent
+      const { integration, ...agent } = data as CreatedAgent
       this.agents.unshift(agent as Agent)
       return data
     },
@@ -63,16 +61,6 @@ export const useAgentsStore = defineStore('agents', {
     async delete(id: string) {
       await agentsApi.delete(id)
       this.agents = this.agents.filter((a) => a.id !== id)
-    },
-    async start(id: string) {
-      await agentsApi.start(id)
-      const a = this.agents.find((a) => a.id === id)
-      if (a) a.status = 'running'
-    },
-    async stop(id: string) {
-      await agentsApi.stop(id)
-      const a = this.agents.find((a) => a.id === id)
-      if (a) a.status = 'stopped'
     },
   },
 })

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { dispatchReply, transitionJiraIssue, type ReplyOpts } from "@wpbawsed/agent-broker-core";
+import { dispatchReply, transitionJiraIssue, type ReplyOpts } from "./broker-core.js";
 import type { DB } from "../db/client.js";
 import { brokers, replyContexts } from "../db/schema.js";
 
@@ -16,7 +16,7 @@ const fallbackLogger: ReplyPolicyLogger = {
  * Reply policy 執行層（Layer A 的 egress）。
  *
  * 職責分工提醒：
- *  - dispatchReply / transitionJiraIssue = 「怎麼打 Slack/Jira API」= agent-broker-core，現成，不重寫。
+ *  - dispatchReply / transitionJiraIssue = 「怎麼打 Slack/Jira API」= ./broker-core.ts（從 agent-broker 併入）。
  *  - 本檔 = 「何時、對誰、做哪個動作」的 policy 編排 + 憑證來源（broker.requiredVars）。
  *
  * 兩個 interceptor：
@@ -55,7 +55,7 @@ export function resolveIssueKey(replyTo?: string | null): string | undefined {
   return m?.[1];
 }
 
-/** broker.requiredVars(JSON BrokerVar[]) → agent-broker-core 的 opts */
+/** broker.requiredVars(JSON BrokerVar[]) → broker-core 的 opts */
 function brokerOpts(requiredVarsJson: string | null): ReplyOpts {
   const vars: Record<string, string> = {};
   if (requiredVarsJson) {

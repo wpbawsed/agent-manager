@@ -4,11 +4,9 @@ import { agents, queues } from "../db/schema.js";
 import type { DB } from "../db/client.js";
 import { buildLocalIntegration, type Integration } from "./agent-template.js";
 
-// Cloud agents are deployed through the sandbox-worker (Cloudflare Worker +
-// Sandbox Durable Object). Local agents are never touched by the manager —
-// they self-report via the /internal/agents/:id/* push APIs.
-const SANDBOX_WORKER_URL = process.env.SANDBOX_WORKER_URL || "";
-const SANDBOX_INTERNAL_TOKEN = process.env.SANDBOX_INTERNAL_TOKEN || "";
+// The manager never starts or stops agents: every agent (local or cloud) runs
+// its own runtime and self-reports via the /internal/agents/:id/* push APIs.
+// `type` only records where it runs.
 const MANAGER_PUBLIC_URL =
   process.env.MANAGER_PUBLIC_URL || process.env.API_SERVER_URL || "http://localhost:8080";
 
@@ -24,44 +22,6 @@ export function withOnline(agent: AgentRow): AgentView {
     online:
       agent.lastHeartbeatAt != null &&
       Date.now() - agent.lastHeartbeatAt < HEARTBEAT_TTL_MS,
-  };
-}
-
-// ── sandbox-worker client (cloud agents only) ──────────────────────────────
-
-async function sandboxCall(
-  path: string,
-  body?: Record<string, unknown>,
-): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
-  if (!SANDBOX_WORKER_URL) {
-    return { ok: false, status: 0, error: "SANDBOX_WORKER_URL not configured" };
-  }
-  try {
-    const res = await fetch(`${SANDBOX_WORKER_URL}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${SANDBOX_INTERNAL_TOKEN}`,
-      },
-      body: JSON.stringify(body ?? {}),
-    });
-    const data = await res.json().catch(() => undefined);
-    if (!res.ok) {
-      return { ok: false, status: res.status, data, error: `sandbox-worker ${res.status}` };
-    }
-    return { ok: true, status: res.status, data };
-  } catch (err) {
-    return { ok: false, status: 0, error: (err as Error).message };
-  }
-}
-
-function cloudAgentEnv(agent: AgentRow, queueName: string): Record<string, string> {
-  return {
-    AGENT_ID: agent.id,
-    AGENT_TOKEN: agent.apiToken,
-    AGENT_MANAGER_URL: MANAGER_PUBLIC_URL,
-    QUEUE_NAME: queueName,
-    REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379",
   };
 }
 
@@ -84,7 +44,6 @@ export interface CreateAgentInput {
   description?: string;
   instruction?: string;
   queueId?: string;
-  runtimeCmd?: string;
   type?: "local" | "cloud";
   endpoint?: string;
   ownerId: string;
@@ -92,8 +51,7 @@ export interface CreateAgentInput {
 
 export interface CreateAgentResult {
   agent: AgentView;
-  integration: Integration | null; // local agents get onboarding material
-  deploy: { ok: boolean; error?: string } | null; // cloud agents get deploy result
+  integration: Integration; // onboarding material: env, push endpoints, sample runner
 }
 
 export async function createAgent(db: DB, input: CreateAgentInput): Promise<CreateAgentResult> {
@@ -118,7 +76,6 @@ export async function createAgent(db: DB, input: CreateAgentInput): Promise<Crea
       description: input.description,
       instruction: input.instruction,
       queueId: input.queueId ?? null,
-      runtimeCmd: input.runtimeCmd ?? null,
       type,
       endpoint: input.endpoint ?? null,
       apiToken,
@@ -128,32 +85,15 @@ export async function createAgent(db: DB, input: CreateAgentInput): Promise<Crea
     })
     .returning();
 
-  if (type === "local") {
-    const integration = buildLocalIntegration({
-      agentId: id,
-      agentName: input.name,
-      apiToken,
-      managerUrl: MANAGER_PUBLIC_URL,
-      queueName,
-      instruction: input.instruction,
-    });
-    return { agent: withOnline(agent), integration, deploy: null };
-  }
-
-  // type === "cloud": initialize the sandbox (best-effort; agent record exists
-  // either way and can be re-deployed via POST /api/agents/:id/start).
-  const init = await sandboxCall(`/agents/${id}/init`, {
-    instruction: input.instruction ?? `# ${input.name}\n`,
-    env: cloudAgentEnv(agent, queueName ?? `broker-${id}`),
+  const integration = buildLocalIntegration({
+    agentId: id,
+    agentName: input.name,
+    apiToken,
+    managerUrl: MANAGER_PUBLIC_URL,
+    queueName,
+    instruction: input.instruction,
   });
-  if (!init.ok) {
-    console.error(`Cloud agent ${id} sandbox init failed:`, init.error, init.data ?? "");
-  }
-  return {
-    agent: withOnline(agent),
-    integration: null,
-    deploy: init.ok ? { ok: true } : { ok: false, error: init.error },
-  };
+  return { agent: withOnline(agent), integration };
 }
 
 export async function listAgents(db: DB, ownerId: string): Promise<AgentView[]> {
@@ -187,7 +127,6 @@ export async function updateAgent(
     }
     updates.queueId = input.queueId || null;
   }
-  if (input.runtimeCmd !== undefined) updates.runtimeCmd = input.runtimeCmd;
   if (input.endpoint !== undefined) updates.endpoint = input.endpoint;
 
   const [updated] = await db.update(agents).set(updates).where(eq(agents.id, id)).returning();
@@ -197,68 +136,14 @@ export async function updateAgent(
 export async function deleteAgent(db: DB, id: string, ownerId: string) {
   const agent = await getAgent(db, id, ownerId);
   if (!agent) return false;
-  if (agent.type === "cloud") {
-    await sandboxCall(`/agents/${id}/stop`); // best-effort teardown
-  }
   await db.delete(agents).where(eq(agents.id, id));
   return true;
 }
 
-// ── Agent lifecycle ─────────────────────────────────────────────────────────
-// Only cloud agents can be started/stopped by the manager. Local agents are
-// managed by their own runtime; the manager just observes their heartbeats.
-
-export async function startAgent(db: DB, id: string, ownerId: string) {
-  const agent = await getAgent(db, id, ownerId);
-  if (!agent) return { ok: false, error: "Agent not found" };
-
-  if (agent.type === "local") {
-    return {
-      ok: false,
-      error:
-        "Local agents are started by their own runtime. Run the agent on your machine — it will report in via the push APIs.",
-    };
-  }
-
-  const queueName = (await resolveOwnedQueueName(db, agent.queueId, ownerId)) ?? `broker-${id}`;
-
-  const res = await sandboxCall(`/agents/${id}/start`, {
-    cmd: agent.runtimeCmd ?? undefined,
-    env: cloudAgentEnv(agent, queueName),
-    instruction: agent.instruction ?? undefined,
-  });
-  if (!res.ok) return { ok: false, error: res.error ?? "Sandbox start failed" };
-
-  await db.update(agents).set({ status: "running", updatedAt: Date.now() }).where(eq(agents.id, id));
-  return { ok: true };
-}
-
-export async function stopAgent(db: DB, id: string, ownerId: string) {
-  const agent = await getAgent(db, id, ownerId);
-  if (!agent) return { ok: false, error: "Agent not found" };
-
-  if (agent.type === "local") {
-    return {
-      ok: false,
-      error: "Local agents are stopped from their own machine, not from the manager.",
-    };
-  }
-
-  const res = await sandboxCall(`/agents/${id}/stop`);
-  if (!res.ok && res.status !== 404) {
-    return { ok: false, error: res.error ?? "Sandbox stop failed" };
-  }
-
-  await db.update(agents).set({ status: "stopped", updatedAt: Date.now() }).where(eq(agents.id, id));
-  return { ok: true };
-}
-
-// Re-issue the integration material for an existing local agent.
+// Re-issue the integration material for an existing agent.
 export async function getAgentIntegration(db: DB, id: string, ownerId: string) {
   const agent = await getAgent(db, id, ownerId);
   if (!agent) return null;
-  if (agent.type !== "local") return null;
-
   const queueName = await resolveOwnedQueueName(db, agent.queueId, ownerId);
 
   return buildLocalIntegration({

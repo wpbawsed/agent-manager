@@ -31,10 +31,10 @@ function rateLimited(agentId: string): boolean {
 
 // Push APIs implemented by every agent (local or cloud).
 // Auth: Bearer {agent.apiToken} — each agent can only report about itself.
-// INTERNAL_TOKEN is also accepted so trusted infra (sandbox-worker) can proxy.
+// INTERNAL_TOKEN is also accepted so trusted infra can report on an agent's behalf.
 // NOTE: INTERNAL_TOKEN is a single shared secret valid for ANY agent id (it is
 // not scoped per-agent). Treat it like a server credential — never expose it
-// to end users or client-side code, only to sandbox-worker's own env.
+// to end users or client-side code.
 //
 //   POST /internal/agents/:id/heartbeat   ← alive + uptime
 //   POST /internal/agents/:id/metrics     ← cpu / mem / counters

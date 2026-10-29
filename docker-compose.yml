@@ -37,8 +37,6 @@ services:
       - REDIS_URL=redis://redis:6379
       - INTERNAL_TOKEN=${INTERNAL_TOKEN}
       - MANAGER_PUBLIC_URL=${MANAGER_PUBLIC_URL:-http://localhost:8080}
-      - SANDBOX_WORKER_URL=${SANDBOX_WORKER_URL:-}
-      - SANDBOX_INTERNAL_TOKEN=${SANDBOX_INTERNAL_TOKEN:-}
       - CORS_ORIGIN=http://localhost:3000
     extra_hosts:
       - "host.docker.internal:host-gateway"
