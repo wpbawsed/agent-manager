@@ -46,6 +46,24 @@ export const agentsApi = {
   update: (id: string, data: Record<string, unknown>) => api.patch(`/agents/${id}`, data),
   delete: (id: string) => api.delete(`/agents/${id}`),
   integration: (id: string) => api.get(`/agents/${id}/integration`),
+  overview: () => api.get('/agents/overview'),
+}
+
+// ── Workflows ──
+export const workflowsApi = {
+  list: () => api.get('/workflows'),
+  get: (id: string) => api.get(`/workflows/${id}`),
+  create: (data: Record<string, unknown>) => api.post('/workflows', data),
+  update: (id: string, data: Record<string, unknown>) => api.put(`/workflows/${id}`, data),
+  delete: (id: string) => api.delete(`/workflows/${id}`),
+}
+
+// ── Workflow runs ──
+export const runsApi = {
+  list: (params?: { status?: string; workflowId?: string; limit?: number }) => api.get('/workflow-runs', { params }),
+  get: (id: string) => api.get(`/workflow-runs/${id}`),
+  resume: (id: string, message?: string) => api.post(`/workflow-runs/${id}/resume`, { message }),
+  cancel: (id: string) => api.post(`/workflow-runs/${id}/cancel`, {}),
 }
 
 // ── Queues ──

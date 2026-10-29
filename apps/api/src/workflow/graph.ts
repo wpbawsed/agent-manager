@@ -13,6 +13,7 @@ export interface WorkflowNode {
   input: string;              // template: {{input.*}}, {{nodes.<id>.summary|mrUrl|status|label}}, {{human}}
   labels?: string[];          // when set, the agent must end its reply with "結論：<label>"
   interruptBefore?: boolean;  // stop and wait for a human before running this node
+  position?: { x: number; y: number }; // canvas layout only (UI); the engine ignores it
 }
 
 export interface EdgeWhen {
@@ -83,6 +84,8 @@ export function validateGraph(g: unknown, knownAgentIds?: Set<string>): string[]
     if (typeof n.agentId !== "string" || !n.agentId) errors.push(`node ${n.id}: agentId is required`);
     else if (knownAgentIds && !knownAgentIds.has(n.agentId)) errors.push(`node ${n.id}: unknown agent ${n.agentId}`);
     if (typeof n.input !== "string" || !n.input.trim()) errors.push(`node ${n.id}: input is required`);
+    if (n.position !== undefined && (typeof n.position?.x !== "number" || typeof n.position?.y !== "number"))
+      errors.push(`node ${n.id}: position must be { x: number, y: number }`);
     if (n.labels !== undefined) {
       if (!Array.isArray(n.labels) || n.labels.length === 0 || n.labels.some((l) => typeof l !== "string" || !/^\S+$/.test(l)))
         errors.push(`node ${n.id}: labels must be non-empty strings without spaces`);

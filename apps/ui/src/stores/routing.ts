@@ -27,8 +27,9 @@ export interface RoutingRule {
   brokerId: string
   brokerName?: string
   brokerType?: string
-  queueId: string
+  queueId: string | null      // target: a queue…
   queueName?: string
+  workflowId: string | null   // …or a workflow (exactly one is set)
   eventTypes?: string   // JSON string[]
   conditions?: string   // JSON RoutingCondition[]
   replyTarget?: string

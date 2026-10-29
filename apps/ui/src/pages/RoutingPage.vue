@@ -9,7 +9,7 @@
       <div class="card-header">
         <div>
           <div class="card-title">Routing Rules</div>
-          <div class="card-sub">eventTypes 為空 = catch-all；符合則派送至指定 Queue</div>
+          <div class="card-sub">eventTypes 為空 = catch-all；符合則派送至指定 Queue，或啟動一個 Workflow</div>
         </div>
         <button class="btn btn-primary btn-sm" @click="openCreate">+ Add Rule</button>
       </div>
@@ -19,7 +19,7 @@
         <thead>
           <tr>
             <th>Broker</th>
-            <th>Queue</th>
+            <th>目標</th>
             <th>Event Types</th>
             <th>Conditions</th>
             <th>Reply Target</th>
@@ -30,12 +30,12 @@
         <tbody>
           <tr v-for="r in routing.rules" :key="r.id">
             <td>
-              <div style="font-weight:500;">{{ r.brokerName ?? r.brokerId }}</div>
-              <span v-if="r.brokerType" class="chip" :class="r.brokerType" style="margin-top:4px;">{{ r.brokerType }}</span>
+              <div style="font-weight:500;">{{ r.brokerName ?? brokerOf(r.brokerId)?.name ?? r.brokerId }}</div>
+              <span v-if="r.brokerType ?? brokerOf(r.brokerId)?.type" class="chip" :class="r.brokerType ?? brokerOf(r.brokerId)?.type" style="margin-top:4px;">{{ r.brokerType ?? brokerOf(r.brokerId)?.type }}</span>
             </td>
             <td>
-              <span v-if="r.queueName" class="queue-tag">{{ r.queueName }}</span>
-              <span v-else style="color:var(--text3);">{{ r.queueId }}</span>
+              <router-link v-if="r.workflowId" :to="`/workflows?id=${r.workflowId}`" class="wf-tag">⧉ {{ workflows.nameOf(r.workflowId) ?? r.workflowId.slice(0, 8) }}</router-link>
+              <span v-else-if="r.queueId" class="queue-tag">{{ r.queueName ?? queueNameOf(r.queueId) }}</span>
             </td>
             <td>
               <template v-if="routing.eventTypesList(r).length">
@@ -91,11 +91,20 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Queue *</label>
-            <select v-model="form.queueId" class="form-select">
+            <label class="form-label">目標 *</label>
+            <div class="target-kind">
+              <label><input v-model="form.targetKind" type="radio" value="queue" /> Queue（單一 agent）</label>
+              <label><input v-model="form.targetKind" type="radio" value="workflow" /> Workflow</label>
+            </div>
+            <select v-if="form.targetKind === 'queue'" v-model="form.queueId" class="form-select">
               <option value="">— Select queue —</option>
               <option v-for="q in queues.queues" :key="q.id" :value="q.id">{{ q.name }}</option>
             </select>
+            <select v-else v-model="form.workflowId" class="form-select">
+              <option value="">— Select workflow —</option>
+              <option v-for="w in workflows.workflows" :key="w.id" :value="w.id">{{ w.name }}</option>
+            </select>
+            <div v-if="form.targetKind === 'workflow'" class="form-hint">Workflow 走到 END 才依 Reply Policy 回覆；中途停下來等人時會通知來源。</div>
           </div>
           <div class="form-group">
             <label class="form-label">Event Types (optional, 空白 = catch-all)</label>
@@ -129,6 +138,21 @@
           <div class="form-group">
             <label class="form-label">Name</label>
             <input v-model="editForm.name" class="form-input" placeholder="My rule" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">目標</label>
+            <div class="target-kind">
+              <label><input v-model="editForm.targetKind" type="radio" value="queue" /> Queue（單一 agent）</label>
+              <label><input v-model="editForm.targetKind" type="radio" value="workflow" /> Workflow</label>
+            </div>
+            <select v-if="editForm.targetKind === 'queue'" v-model="editForm.queueId" class="form-select">
+              <option value="">— Select queue —</option>
+              <option v-for="q in queues.queues" :key="q.id" :value="q.id">{{ q.name }}</option>
+            </select>
+            <select v-else v-model="editForm.workflowId" class="form-select">
+              <option value="">— Select workflow —</option>
+              <option v-for="w in workflows.workflows" :key="w.id" :value="w.id">{{ w.name }}</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label">Event Types (逗號分隔，空白 = catch-all)</label>
@@ -206,10 +230,21 @@ import { useRoutingStore } from '@/stores/routing'
 import type { RoutingRule, RoutingCondition, ReplyPolicy, ReplyStep } from '@/stores/routing'
 import { useBrokersStore } from '@/stores/brokers'
 import { useQueuesStore } from '@/stores/queues'
+import { useWorkflowsStore } from '@/stores/workflows'
 
 const routing = useRoutingStore()
 const brokers = useBrokersStore()
 const queues  = useQueuesStore()
+const workflows = useWorkflowsStore()
+
+const brokerOf = (id: string) => brokers.brokers.find((b) => b.id === id)
+const queueNameOf = (id: string) => queues.queues.find((q) => q.id === id)?.name ?? id.slice(0, 8)
+
+type TargetKind = 'queue' | 'workflow'
+/** The API wants exactly one of queueId / workflowId. */
+function targetPayload(f: { targetKind: TargetKind; queueId: string; workflowId: string }) {
+  return f.targetKind === 'queue' ? { queueId: f.queueId, workflowId: null } : { queueId: null, workflowId: f.workflowId }
+}
 
 // ── Reply Policy（UI 設定，實際存 JSON）──────────────────────────────
 type PolicyStageKey = 'onReceived' | 'onSuccess' | 'onFailure'
@@ -290,16 +325,21 @@ function applyExamplePolicy() {
 const showCreate  = ref(false)
 const creating    = ref(false)
 const createError = ref('')
-const form = ref({ name: '', brokerId: '', queueId: '', eventTypes: '', replyTarget: '' })
+const emptyForm = () => ({ name: '', brokerId: '', targetKind: 'queue' as TargetKind, queueId: '', workflowId: '', eventTypes: '', replyTarget: '' })
+const form = ref(emptyForm())
 
 function openCreate() {
-  form.value = { name: '', brokerId: '', queueId: '', eventTypes: '', replyTarget: '' }
+  form.value = emptyForm()
   createError.value = ''
   showCreate.value = true
 }
 
 async function createRule() {
-  if (!form.value.brokerId || !form.value.queueId) return
+  const target = form.value.targetKind === 'queue' ? form.value.queueId : form.value.workflowId
+  if (!form.value.brokerId || !target) {
+    createError.value = '請選 Broker 與目標'
+    return
+  }
   creating.value = true
   createError.value = ''
   try {
@@ -309,7 +349,7 @@ async function createRule() {
     await routing.create({
       name: form.value.name || undefined,
       brokerId: form.value.brokerId,
-      queueId: form.value.queueId,
+      ...(form.value.targetKind === 'queue' ? { queueId: form.value.queueId } : { workflowId: form.value.workflowId }),
       eventTypes,
       replyTarget: form.value.replyTarget || undefined,
     })
@@ -327,12 +367,18 @@ const showEdit   = ref(false)
 const saving     = ref(false)
 const editError  = ref('')
 const editId     = ref('')
-const editForm   = ref({ name: '', eventTypes: '', conditionsText: '', replyTarget: '', policy: emptyPolicyForm() })
+const editForm   = ref({
+  name: '', targetKind: 'queue' as TargetKind, queueId: '', workflowId: '',
+  eventTypes: '', conditionsText: '', replyTarget: '', policy: emptyPolicyForm(),
+})
 
 function openEdit(rule: RoutingRule) {
   editId.value = rule.id
   editForm.value = {
     name:           rule.name ?? '',
+    targetKind:     rule.workflowId ? 'workflow' : 'queue',
+    queueId:        rule.queueId ?? '',
+    workflowId:     rule.workflowId ?? '',
     eventTypes:     routing.eventTypesList(rule).join(', '),
     conditionsText: routing.conditionsList(rule)
       .map((c) => `${c.field} ${c.op} ${Array.isArray(c.value) ? c.value.join(',') : c.value}`)
@@ -362,6 +408,10 @@ function parseConditionsText(text: string): RoutingCondition[] {
 }
 
 async function saveEdit() {
+  if (!(editForm.value.targetKind === 'queue' ? editForm.value.queueId : editForm.value.workflowId)) {
+    editError.value = '請選目標'
+    return
+  }
   saving.value = true
   editError.value = ''
   try {
@@ -373,6 +423,7 @@ async function saveEdit() {
       : null
     await routing.update(editId.value, {
       name:        editForm.value.name || null,
+      ...targetPayload(editForm.value),
       eventTypes,
       conditions,
       replyTarget: editForm.value.replyTarget || null,
@@ -397,5 +448,15 @@ onMounted(() => {
   routing.fetch()
   brokers.fetch()
   queues.fetch()
+  workflows.fetch()
 })
 </script>
+
+<style scoped>
+.target-kind { display: flex; gap: 16px; margin-bottom: 8px; font-size: 13px; }
+.target-kind label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
+.wf-tag {
+  display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 4px; text-decoration: none;
+  background: var(--blue-bg); color: var(--blue); border: 1px solid rgba(96,165,250,.3);
+}
+</style>
