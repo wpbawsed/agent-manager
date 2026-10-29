@@ -28,9 +28,16 @@
           <div class="nav-item" :class="{ active: route.path === '/routing' }" @click="go('/routing')">
             <span class="icon">◈</span> Routing
           </div>
+          <div class="nav-item" :class="{ active: route.path === '/workflows' }" @click="go('/workflows')">
+            <span class="icon">⧉</span> Workflows
+          </div>
         </div>
         <div class="nav-section">
           <div class="nav-label">Observe</div>
+          <div class="nav-item" :class="{ active: route.path.startsWith('/workflow-runs') }" @click="go('/workflow-runs')">
+            <span class="icon">▶</span> Runs
+            <span v-if="waiting" class="nav-count">{{ waiting }}</span>
+          </div>
           <div class="nav-item" :class="{ active: route.path === '/logs' }" @click="go('/logs')">
             <span class="icon">≡</span> Logs
           </div>
@@ -74,9 +81,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { runsApi } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,13 +95,28 @@ const initial = computed(() => auth.user?.email?.[0]?.toUpperCase() ?? 'U')
 const pageTitle = computed(() => {
   const map: Record<string, string> = {
     '/agents': 'Agents', '/queues': 'Queues', '/brokers': 'Brokers',
-    '/routing': 'Routing', '/logs': 'Logs', '/playground': 'Playground', '/admin': 'Admin',
+    '/routing': 'Routing', '/workflows': 'Workflows', '/workflow-runs': 'Workflow Runs',
+    '/logs': 'Logs', '/playground': 'Playground', '/admin': 'Admin',
   }
   const key = '/' + route.path.split('/')[1]
   return map[key] ?? 'Agent Manager'
 })
 
 function go(path: string) { router.push(path) }
+
+// Runs waiting on a human, shown as a count next to "Runs".
+const waiting = ref(0)
+async function refreshWaiting() {
+  try {
+    const { data } = await runsApi.list({ status: 'interrupted', limit: 100 })
+    waiting.value = data.length
+  } catch { /* not critical */ }
+}
+let timer: ReturnType<typeof setInterval> | undefined
+onMounted(() => { refreshWaiting(); timer = setInterval(refreshWaiting, 30_000) })
+// a resume / cancel usually happens on a run page: refresh when leaving it too
+watch(() => route.fullPath, refreshWaiting)
+onUnmounted(() => clearInterval(timer))
 
 function logout() {
   auth.logout()
@@ -141,6 +164,10 @@ function logout() {
 .nav-item:hover { background: var(--surface2); color: var(--text); }
 .nav-item.active { background: var(--accent-bg); color: var(--accent); }
 .nav-item .icon { font-size: 15px; width: 18px; text-align: center; }
+.nav-count {
+  margin-left: auto; min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--yellow-bg); color: var(--yellow); font-size: 11px; text-align: center;
+}
 .sidebar-footer {
   padding: 12px 8px 16px;
   border-top: 1px solid var(--border);

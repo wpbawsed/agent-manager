@@ -20,7 +20,9 @@ export interface Agent {
   type: 'local' | 'cloud'
   endpoint?: string
   apiToken: string
-  status: 'stopped' | 'running' | 'error'
+  status: 'stopped' | 'running' | 'idle' | 'error'
+  brainCommit?: string | null
+  brainPullError?: string | null
   online: boolean
   lastHeartbeatAt?: number
   createdAt: number

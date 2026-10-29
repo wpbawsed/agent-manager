@@ -40,7 +40,7 @@ Reply policy    ← posts the result back to Slack / Jira / Notion / LINE (apps/
 |---|---|
 | API | Fastify, Drizzle ORM, PostgreSQL, Redis |
 | Queue | BullMQ |
-| Frontend | Vue 3, Vite, Pinia, Vue Router |
+| Frontend | Vue 3, Vite, Pinia, Vue Router, Vue Flow (workflow canvas) |
 | Auth | JWT (`@fastify/jwt`) for users; per-agent `apiToken` for the push APIs |
 | Infra | Docker Compose (local), Railway (deploy) |
 
@@ -77,10 +77,12 @@ pnpm --filter @agent-manager/api run test        # integration, needs the API on
 | Page | Path | Description |
 |---|---|---|
 | Login / Register | `/login` `/register` | JWT auth |
-| Agents | `/agents` | Register agents, online status from heartbeats, setup material (token, env, push endpoints) |
+| Agents | `/agents` | Register agents; monitoring: status (running／idle／error／offline), last heartbeat, brain commit, queue depth, 24h done／failed／avg duration／cost, current workflow step; setup material |
 | Queues | `/queues` | Manage BullMQ queues |
 | Brokers | `/brokers` | Webhook receivers |
-| Routing | `/routing` | Broker → Queue rules, eventType filters, reply policy |
+| Routing | `/routing` | Broker → Queue **or** Workflow rules, eventType filters, reply policy |
+| Workflows | `/workflows` | Graph editor (Vue Flow): agents as nodes, conditional edges, labels, gates; each save is a new version |
+| Runs | `/workflow-runs`, `/workflow-runs/:id` | Runs (waiting-on-human first, count in the sidebar); run detail with the graph, every step's input／result／cost, resume and cancel |
 | Logs | `/logs` | Agent log history and incoming webhook events |
 | Playground | `/playground` | One-shot prompt against an agent's instruction (SSE) |
 | Admin | `/admin` | User management and stats (admin role) |
