@@ -6,7 +6,7 @@ import {
   updateRoutingRule,
   deleteRoutingRule,
 } from "../services/routing.js";
-import type { RoutingCondition, ReplyPolicy } from "../services/routing.js";
+import { RoutingTargetError, type RoutingCondition, type ReplyPolicy } from "../services/routing.js";
 
 // Shared JSON schema fragment for ReplyPolicy — one step per stage, all optional.
 const replyStepSchema = {
@@ -32,7 +32,8 @@ export default async function routingRoutes(app: FastifyInstance) {
     Body: {
       name?: string;
       brokerId: string;
-      queueId: string;
+      queueId?: string;
+      workflowId?: string;
       eventTypes?: string[];
       conditions?: RoutingCondition[];
       replyTarget?: string;
@@ -44,11 +45,12 @@ export default async function routingRoutes(app: FastifyInstance) {
       schema: {
         body: {
           type: "object",
-          required: ["brokerId", "queueId"],
+          required: ["brokerId"],
           properties: {
             name:        { type: "string" },
             brokerId:    { type: "string" },
             queueId:     { type: "string" },
+            workflowId:  { type: "string" },
             eventTypes:  { type: "array", items: { type: "string" } },
             conditions:  {
               type: "array",
@@ -71,7 +73,13 @@ export default async function routingRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const user = req.user as { sub: string };
-      const rule = await createRoutingRule(app.db, { ...req.body, ownerId: user.sub });
+      let rule;
+      try {
+        rule = await createRoutingRule(app.db, { ...req.body, ownerId: user.sub });
+      } catch (err) {
+        if (err instanceof RoutingTargetError) return reply.code(400).send({ error: err.message });
+        throw err;
+      }
       return reply.code(201).send(rule);
     },
   );
@@ -103,6 +111,8 @@ export default async function routingRoutes(app: FastifyInstance) {
       conditions?: RoutingCondition[] | null;
       replyTarget?: string | null;
       replyPolicy?: ReplyPolicy | null;
+      queueId?: string | null;
+      workflowId?: string | null;
     };
   }>(
     "/:id",
@@ -127,6 +137,8 @@ export default async function routingRoutes(app: FastifyInstance) {
             },
             replyTarget: { type: ["string", "null"] },
             replyPolicy: replyPolicySchema,
+            queueId:     { type: ["string", "null"] },
+            workflowId:  { type: ["string", "null"] },
           },
         },
       },
@@ -134,7 +146,13 @@ export default async function routingRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const user = req.user as { sub: string };
-      const rule = await updateRoutingRule(app.db, req.params.id, user.sub, req.body);
+      let rule;
+      try {
+        rule = await updateRoutingRule(app.db, req.params.id, user.sub, req.body);
+      } catch (err) {
+        if (err instanceof RoutingTargetError) return reply.code(400).send({ error: err.message });
+        throw err;
+      }
       if (!rule) return reply.code(404).send({ error: "Routing rule not found" });
       return rule;
     },

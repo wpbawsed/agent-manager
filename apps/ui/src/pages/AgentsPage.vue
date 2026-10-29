@@ -42,7 +42,9 @@
             <th>Type</th>
             <th>Queue</th>
             <th>Status</th>
-            <th>Instruction</th>
+            <th>Brain</th>
+            <th>近 24 小時</th>
+            <th>正在做</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -58,14 +60,31 @@
             <td>
               <span v-if="queueName(a.queueId)" class="queue-tag">{{ queueName(a.queueId) }}</span>
               <span v-else style="color:var(--text3); font-size:12px;">—</span>
+              <div v-if="ov(a.id)?.queueDepth" class="sub">{{ ov(a.id)!.queueDepth }} 個排隊中</div>
             </td>
             <td>
-              <span class="badge" :class="a.online ? 'running' : (a.status === 'error' ? 'error' : 'stopped')">
-                {{ a.online ? 'online' : (a.status === 'error' ? 'error' : 'offline') }}
-              </span>
+              <span class="badge" :class="statusOf(a).cls">{{ statusOf(a).label }}</span>
+              <div class="sub">{{ fmtAgo(a.lastHeartbeatAt) }}</div>
             </td>
             <td>
-              <div class="instruction-preview">{{ a.instruction || '（未設定 instruction）' }}</div>
+              <span v-if="ov(a.id)?.brainCommit" class="mono" :title="ov(a.id)!.brainCommit!">{{ ov(a.id)!.brainCommit!.slice(0, 7) }}</span>
+              <span v-else style="color:var(--text3); font-size:12px;">—</span>
+              <div v-if="ov(a.id)?.brainPullError" class="sub warn" :title="ov(a.id)!.brainPullError!">⚠ pull 失敗，用舊版</div>
+            </td>
+            <td>
+              <template v-if="ov(a.id)">
+                <div style="font-size:12px;">
+                  <span style="color:var(--accent);">✓ {{ ov(a.id)!.last24h.done }}</span>
+                  <span style="margin-left:8px;" :style="{ color: ov(a.id)!.last24h.failed ? 'var(--red)' : 'var(--text3)' }">✗ {{ ov(a.id)!.last24h.failed }}</span>
+                </div>
+                <div class="sub">平均 {{ fmtDuration(ov(a.id)!.last24h.avgDurationMs) }} · {{ fmtCost(ov(a.id)!.last24h.costUsd) }}</div>
+              </template>
+            </td>
+            <td>
+              <router-link v-if="ov(a.id)?.currentStep" :to="`/workflow-runs/${ov(a.id)!.currentStep!.runId}`" style="font-size:12px;">
+                {{ ov(a.id)!.currentStep!.workflowName }} · <span class="mono">{{ ov(a.id)!.currentStep!.node }}</span>
+              </router-link>
+              <span v-else style="color:var(--text3); font-size:12px;">—</span>
             </td>
             <td>
               <div class="action-group">
@@ -201,8 +220,19 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useAgentsStore, type AgentIntegration } from '@/stores/agents'
+import { useAgentsStore, type Agent, type AgentIntegration } from '@/stores/agents'
 import { useQueuesStore } from '@/stores/queues'
+import { agentsApi } from '@/api'
+import { fmtAgo, fmtCost, fmtDuration } from '@/utils/format'
+
+interface AgentOverview {
+  id: string
+  brainCommit: string | null
+  brainPullError: string | null
+  queueDepth: number | null
+  last24h: { done: number; failed: number; avgDurationMs: number | null; costUsd: number }
+  currentStep: { runId: string; workflowName: string; node: string } | null
+}
 
 const agents = useAgentsStore()
 const queues = useQueuesStore()
@@ -214,6 +244,27 @@ const integration = ref<AgentIntegration | null>(null)
 const activeFile = ref('index.js')
 
 const form = ref({ name: '', queueId: '', instruction: '', type: 'local' as 'local' | 'cloud', endpoint: '' })
+
+// Monitoring numbers (GET /agents/overview), refreshed with the list.
+const overview = ref<Record<string, AgentOverview>>({})
+const ov = (id: string): AgentOverview | undefined => overview.value[id]
+async function fetchOverview() {
+  try {
+    const { data } = await agentsApi.overview()
+    overview.value = Object.fromEntries((data as AgentOverview[]).map((o) => [o.id, o]))
+  } catch { /* the list still works without it */ }
+}
+async function refresh() {
+  await Promise.all([agents.fetch(), fetchOverview()])
+}
+
+/** online + what the last heartbeat said (running / idle / error). */
+function statusOf(a: Agent): { cls: string; label: string } {
+  if (!a.online) return a.status === 'error' ? { cls: 'error', label: 'error' } : { cls: 'stopped', label: 'offline' }
+  if (a.status === 'error') return { cls: 'error', label: '接不了工作' }
+  if (a.status === 'idle') return { cls: 'active', label: 'idle' }
+  return { cls: 'running', label: 'running' }
+}
 
 const onlineCount  = computed(() => agents.agents.filter((a) => a.online).length)
 const offlineCount = computed(() => agents.agents.filter((a) => !a.online && a.status !== 'error').length)
@@ -280,9 +331,9 @@ async function createAgent() {
 // Refresh periodically so online/offline reflects recent heartbeats.
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
-  agents.fetch()
+  refresh()
   queues.fetch()
-  timer = setInterval(() => agents.fetch(), 30_000)
+  timer = setInterval(refresh, 30_000)
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })
 </script>
@@ -298,6 +349,9 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 .type-option-title { font-weight: 500; font-size: 13px; }
 .type-option-desc { font-size: 11px; color: var(--text2, #8b90a0); line-height: 1.5; margin-top: 2px; }
 
+.sub { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.sub.warn { color: var(--yellow); }
+.mono { font-family: ui-monospace, monospace; font-size: 12px; }
 .type-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border, #2a2d35); }
 .type-tag.cloud { color: #4a90d9; border-color: rgba(74, 144, 217, .4); }
 .type-tag.local { color: #3db87a; border-color: rgba(61, 184, 122, .4); }

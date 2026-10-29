@@ -40,7 +40,7 @@ Reply policy    ← posts the result back to Slack / Jira / Notion / LINE (apps/
 |---|---|
 | API | Fastify, Drizzle ORM, PostgreSQL, Redis |
 | Queue | BullMQ |
-| Frontend | Vue 3, Vite, Pinia, Vue Router |
+| Frontend | Vue 3, Vite, Pinia, Vue Router, Vue Flow (workflow canvas) |
 | Auth | JWT (`@fastify/jwt`) for users; per-agent `apiToken` for the push APIs |
 | Infra | Docker Compose (local), Railway (deploy) |
 
@@ -77,10 +77,12 @@ pnpm --filter @agent-manager/api run test        # integration, needs the API on
 | Page | Path | Description |
 |---|---|---|
 | Login / Register | `/login` `/register` | JWT auth |
-| Agents | `/agents` | Register agents, online status from heartbeats, setup material (token, env, push endpoints) |
+| Agents | `/agents` | Register agents; monitoring: status (running／idle／error／offline), last heartbeat, brain commit, queue depth, 24h done／failed／avg duration／cost, current workflow step; setup material |
 | Queues | `/queues` | Manage BullMQ queues |
 | Brokers | `/brokers` | Webhook receivers |
-| Routing | `/routing` | Broker → Queue rules, eventType filters, reply policy |
+| Routing | `/routing` | Broker → Queue **or** Workflow rules, eventType filters, reply policy |
+| Workflows | `/workflows` | Graph editor (Vue Flow): agents as nodes, conditional edges, labels, gates; each save is a new version |
+| Runs | `/workflow-runs`, `/workflow-runs/:id` | Runs (waiting-on-human first, count in the sidebar); run detail with the graph, every step's input／result／cost, resume and cancel |
 | Logs | `/logs` | Agent log history and incoming webhook events |
 | Playground | `/playground` | One-shot prompt against an agent's instruction (SSE) |
 | Admin | `/admin` | User management and stats (admin role) |
@@ -91,11 +93,15 @@ pnpm --filter @agent-manager/api run test        # integration, needs the API on
 |---|---|---|
 | `POST /:tenant/:sourceType/:sourceId` | broker secret | Webhook ingress |
 | `/api/auth` | — | Register / login / me |
-| `/api/agents` | user JWT | Agent CRUD, `GET /:id/integration` setup material, agent files |
+| `/api/agents` | user JWT | Agent CRUD, `GET /overview` monitoring (liveness, brain commit, queue depth, 24h stats), `GET /:id/integration` setup material, agent files |
 | `/api/queues`, `/api/brokers`, `/api/routing` | user JWT | Queue / broker / routing rule CRUD |
+| `/api/workflows` | user JWT | Workflow graphs; `PUT /:id` with a `graph` saves a new version |
+| `/api/workflow-runs` | user JWT | Runs (interrupted first), `GET /:id` with steps, `POST /:id/resume`, `POST /:id/cancel` |
 | `/api/logs`, `/api/playground`, `/api/admin` | user JWT | Logs, playground run, admin |
-| `/internal/agents/:id/{heartbeat,metrics,logs}` | agent `apiToken` | Push APIs every agent calls |
-| `/internal/events` | `INTERNAL_TOKEN` | Event start (`POST`) / finish (`PATCH /:eventId`, triggers the reply policy) |
+| `/internal/agents/:id/{heartbeat,metrics,logs}` | agent `apiToken` | Push APIs every agent calls (heartbeat: `running`/`idle`/`error`, `brainCommit`, `brainPullError`) |
+| `/internal/agents/:id/events` | agent `apiToken` | Event start (`POST`) / finish (`PATCH /:eventId`); like `/internal/events` but books `agent_runs` |
+| `GET /internal/agents/:id/work` | agent `apiToken` | Queue depth, recent runs, workflow runs waiting on a human at this agent |
+| `/internal/events` | `INTERNAL_TOKEN` | Event start (`POST`) / finish (`PATCH /:eventId`, triggers the reply policy; `wf_` ids drive the workflow engine) |
 | `/internal/agent-heartbeat`, `/internal/agent-log` | `INTERNAL_TOKEN` | Legacy, superseded by `/internal/agents/:id/*`; nothing in this repo calls them |
 
 ## Database Schema
@@ -108,9 +114,12 @@ pnpm --filter @agent-manager/api run test        # integration, needs the API on
 | `agent_metrics` | Metric snapshots pushed by agents |
 | `agent_logs` | Agent log history |
 | `brokers` | Webhook broker configs |
-| `routing_rules` | Broker → Queue links with filters and reply policy |
+| `routing_rules` | Broker → Queue **or** Workflow links with filters and reply policy |
 | `webhook_events` | Incoming webhook event log |
 | `reply_contexts` | Where/how to reply for an in-flight event; deleted after the reply fires |
+| `agent_runs` | One row per (agent, event): status, cost, duration — source of per-agent stats |
+| `workflows`, `workflow_versions` | Workflow graphs; every save is a new immutable version |
+| `workflow_runs`, `workflow_steps` | Executions pinned to a version, and one checkpoint row per step |
 
 ## Workflow Example
 

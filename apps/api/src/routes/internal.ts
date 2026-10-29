@@ -1,8 +1,10 @@
 import type { FastifyPluginAsync } from "fastify";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { agents, agentLogs, webhookEvents } from "../db/schema.js";
-import { runReply, type AgentResultLite } from "../lib/reply-policy.js";
+import { agents, agentLogs } from "../db/schema.js";
+import { reportEventEnd, reportEventStart } from "../lib/event-report.js";
+import { engineDeps } from "../workflow/deps.js";
+import type { ReportedResult } from "../workflow/engine.js";
 
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
 // Layer B（agent-teammate）用 AGENT_API_TOKEN 回報；接受它或既有 INTERNAL_TOKEN
@@ -121,7 +123,8 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // POST /internal/events
-  // Called by BullMQConsumer when it picks up a job to record processing state.
+  // Called by an agent when it picks up a job (legacy shared-token route; the
+  // per-agent equivalent is POST /internal/agents/:id/events).
   app.post<{
     Body: {
       eventId: string;
@@ -146,42 +149,16 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (req, reply) => {
-      const { eventId, brokerId, sourceType = "unknown", eventType } = req.body;
-
-      const [existing] = await app.db
-        .select({ id: webhookEvents.id })
-        .from(webhookEvents)
-        .where(eq(webhookEvents.id, eventId))
-        .limit(1);
-
-      if (existing) {
-        await app.db
-          .update(webhookEvents)
-          .set({ status: "processing" })
-          .where(eq(webhookEvents.id, eventId));
-      } else {
-        // Consumer received an event that was enqueued before webhook logging — create record
-        await app.db.insert(webhookEvents).values({
-          id: eventId,
-          brokerId,
-          ownerId: "unknown",
-          sourceType,
-          eventType: eventType ?? null,
-          status: "processing",
-          routed: 1,
-          createdAt: Date.now(),
-        });
-      }
-
+      await reportEventStart(engineDeps(app, req.log), req.body);
       return reply.code(200).send({ ok: true });
     },
   );
 
   // PATCH /internal/events/:eventId
-  // Called by BullMQConsumer when a job completes or fails.
+  // Called by an agent when a job completes or fails. "wf_" ids drive the workflow engine.
   app.patch<{
     Params: { eventId: string };
-    Body: { status: "processing" | "done" | "failed"; result?: AgentResultLite };
+    Body: { status: "processing" | "done" | "failed"; result?: ReportedResult };
   }>(
     "/events/:eventId",
     {
@@ -202,24 +179,8 @@ const internalRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (req, reply) => {
-      const { eventId } = req.params;
       const { status, result } = req.body;
-
-      await app.db
-        .update(webhookEvents)
-        .set({ status })
-        .where(eq(webhookEvents.id, eventId));
-
-      // ReplyInterceptor：任務結束 → 依 reply policy 執行 onSuccess/onFailure（fire-and-forget）
-      if (status === "done" || status === "failed") {
-        runReply(
-          app.db,
-          eventId,
-          result ?? { status: status === "done" ? "success" : "failed" },
-          req.log,
-        );
-      }
-
+      await reportEventEnd(engineDeps(app, req.log), req.params.eventId, status, result);
       return reply.code(200).send({ ok: true });
     },
   );

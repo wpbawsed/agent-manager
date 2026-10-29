@@ -1,4 +1,4 @@
-import { pgTable, text, integer, bigint } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, doublePrecision, uniqueIndex } from "drizzle-orm/pg-core";
 
 // ── users ──────────────────────────────────────────────────────────────────
 export const users = pgTable("users", {
@@ -40,8 +40,10 @@ export const agents = pgTable("agents", {
   type: text("type").notNull().default("local"),          // local | cloud
   endpoint: text("endpoint"),        // optional URL of a local agent (informational)
   apiToken: text("api_token").unique().notNull(),
-  status: text("status").notNull().default("stopped"), // stopped | running | error
+  status: text("status").notNull().default("stopped"), // stopped | running | idle | error
   lastHeartbeatAt: bigint("last_heartbeat_at", { mode: "number" }), // last push from the agent
+  brainCommit: text("brain_commit"),         // brain repo commit the agent last reported (heartbeat)
+  brainPullError: text("brain_pull_error"),  // last brain pull failure; null once a pull succeeds
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
@@ -90,9 +92,9 @@ export const routingRules = pgTable("routing_rules", {
   brokerId: text("broker_id")
     .notNull()
     .references(() => brokers.id),
-  queueId: text("queue_id")
-    .notNull()
-    .references(() => queues.id),
+  // Target is either a queue (queueId) or a workflow (workflowId) — exactly one is set.
+  queueId: text("queue_id").references(() => queues.id),
+  workflowId: text("workflow_id").references(() => workflows.id),
   eventTypes: text("event_types"),   // JSON string[]: allowlist of eventType values. null = catch-all
   conditions: text("conditions"),    // JSON RoutingCondition[]: payload-level filter. null = pass-through
   replyTarget: text("reply_target"), // Override reply URI. Null = use event's replyTo.
@@ -139,5 +141,101 @@ export const agentLogs = pgTable("agent_logs", {
   sessionId: text("session_id"),
   level: text("level").notNull(), // info | error
   message: text("message").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// ── agent_runs ─────────────────────────────────────────────────────────────
+// One row per (agent, event) the agent processed. Source for per-agent stats
+// (success/fail counts, duration, cost). webhook_events can't serve this: one
+// webhook eventId fans out to every matching queue and carries no agentId.
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id").notNull(),
+    eventId: text("event_id").notNull(),
+    status: text("status").notNull(), // running | done | failed
+    costUsd: doublePrecision("cost_usd"),
+    durationMs: integer("duration_ms"),
+    numTurns: integer("num_turns"),
+    error: text("error"),
+    startedAt: bigint("started_at", { mode: "number" }).notNull(),
+    endedAt: bigint("ended_at", { mode: "number" }),
+  },
+  (t) => ({ agentEvent: uniqueIndex("uq_agent_runs_agent_event").on(t.agentId, t.eventId) }),
+);
+
+// ── workflows ──────────────────────────────────────────────────────────────
+// A graph of agents (LangGraph-style). The graph itself lives in immutable
+// workflow_versions rows; editing a workflow creates a new version.
+export const workflows = pgTable("workflows", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id")
+    .notNull()
+    .references(() => users.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  currentVersionId: text("current_version_id"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const workflowVersions = pgTable("workflow_versions", {
+  id: text("id").primaryKey(),
+  workflowId: text("workflow_id")
+    .notNull()
+    .references(() => workflows.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  graph: text("graph").notNull(), // JSON WorkflowGraph (see workflow/graph.ts)
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// ── workflow_runs ──────────────────────────────────────────────────────────
+// One execution of a workflow, pinned to the version current when it started.
+export const workflowRuns = pgTable("workflow_runs", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  workflowId: text("workflow_id")
+    .notNull()
+    .references(() => workflows.id, { onDelete: "cascade" }),
+  versionId: text("version_id").notNull(),
+  originEventId: text("origin_event_id"),
+  brokerId: text("broker_id"),
+  ruleId: text("rule_id"),
+  sourceType: text("source_type"),
+  replyTo: text("reply_to"),         // rule.replyTarget already applied
+  replyPolicy: text("reply_policy"), // JSON ReplyPolicy copied from the rule at start; used at END
+  status: text("status").notNull(),  // running | interrupted | done | failed | cancelled
+  currentNode: text("current_node"),
+  steps: integer("steps").notNull().default(0), // count of kind=run steps (maxSteps applies to this)
+  state: text("state").notNull(),    // JSON RunState
+  error: text("error"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+// ── workflow_steps ─────────────────────────────────────────────────────────
+// Checkpoints: one row per enqueue (or gate). eventId is unique per step —
+// BullMQ keeps completed jobs, so re-using an eventId would drop the job.
+export const workflowSteps = pgTable("workflow_steps", {
+  id: text("id").primaryKey(),
+  runId: text("run_id")
+    .notNull()
+    .references(() => workflowRuns.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),
+  node: text("node").notNull(),
+  agentId: text("agent_id"),
+  eventId: text("event_id").notNull().unique(), // "wf_{runId}_{seq}"
+  kind: text("kind").notNull(),    // run | retry | resume | gate
+  attempt: integer("attempt").notNull().default(1),
+  status: text("status").notNull(), // queued | running | done | failed | interrupted | cancelled
+  input: text("input"),
+  human: text("human"),
+  result: text("result"),           // JSON StepResult
+  startedAt: bigint("started_at", { mode: "number" }),
+  endedAt: bigint("ended_at", { mode: "number" }),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });

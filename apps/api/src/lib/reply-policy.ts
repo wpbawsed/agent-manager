@@ -132,6 +132,22 @@ export function runAck(
 }
 
 /**
+ * 單純通知（fire-and-forget）：不看 policy，直接把一段文字貼到 replyTo。
+ * Workflow 停下來等人審（interrupt）時用；最終結果仍走 runReply。
+ */
+export function runNotice(
+  db: DB,
+  args: { brokerId: string; replyTo?: string | null; text: string },
+  log: ReplyPolicyLogger = fallbackLogger,
+): void {
+  if (!args.replyTo) return;
+  void (async () => {
+    const opts = await loadBrokerOpts(db, args.brokerId);
+    await execStep({ reply: true }, { replyTo: args.replyTo, text: args.text, opts }, log);
+  })().catch((err) => log.error({ err }, "notice failed"));
+}
+
+/**
  * Reply interceptor：agent 回報結果後呼叫（fire-and-forget）。
  * 從 reply_contexts 撈回 policy/replyTo/issueKey，執行 onSuccess/onFailure，最後清掉 context。
  */

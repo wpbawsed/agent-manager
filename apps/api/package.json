@@ -10,7 +10,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
     "test": "node --test tests/agents.test.mjs",
-    "test:unit": "node --import tsx --test tests/broker-core.test.ts"
+    "test:unit": "node --import tsx --test tests/broker-core.test.ts tests/workflow-graph.test.ts"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
