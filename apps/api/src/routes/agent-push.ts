@@ -241,8 +241,9 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
         },
       },
     },
-    async (req) => {
-      await reportEventStart(engineDeps(app, req.log), { ...req.body, agentId: req.params.id });
+    async (req, reply) => {
+      const ok = await reportEventStart(engineDeps(app, req.log), { ...req.body, agentId: req.params.id });
+      if (!ok) return reply.code(404).send({ error: "Event not found for this agent" });
       return { ok: true };
     },
   );
@@ -265,8 +266,9 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
         },
       },
     },
-    async (req) => {
-      await reportEventEnd(engineDeps(app, req.log), req.params.eventId, req.body.status, req.body.result, req.params.id);
+    async (req, reply) => {
+      const ok = await reportEventEnd(engineDeps(app, req.log), req.params.eventId, req.body.status, req.body.result, req.params.id);
+      if (!ok) return reply.code(404).send({ error: "Event not found for this agent" });
       return { ok: true };
     },
   );

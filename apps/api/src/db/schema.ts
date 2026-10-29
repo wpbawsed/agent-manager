@@ -231,7 +231,7 @@ export const workflowSteps = pgTable("workflow_steps", {
   eventId: text("event_id").notNull().unique(), // "wf_{runId}_{seq}"
   kind: text("kind").notNull(),    // run | retry | resume | gate
   attempt: integer("attempt").notNull().default(1),
-  status: text("status").notNull(), // queued | running | done | failed | interrupted
+  status: text("status").notNull(), // queued | running | done | failed | interrupted | cancelled
   input: text("input"),
   human: text("human"),
   result: text("result"),           // JSON StepResult

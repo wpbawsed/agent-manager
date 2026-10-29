@@ -2,13 +2,14 @@
 // arriving (PATCH .../events/:eventId with a "wf_" id) drives the next enqueue.
 // Agents never know they are in a workflow (system-integration-design.md §4.9).
 import { randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Queue } from "bullmq";
 import type { DB } from "../db/client.js";
 import {
   agents,
   queues,
   replyContexts,
+  webhookEvents,
   workflowRuns,
   workflowSteps,
   workflowVersions,
@@ -73,8 +74,23 @@ async function graphOf(db: DB, versionId: string): Promise<WorkflowGraph> {
   return JSON.parse(v.graph) as WorkflowGraph;
 }
 
-async function updateRun(db: DB, runId: string, patch: Partial<RunRow>): Promise<void> {
-  await db.update(workflowRuns).set({ ...patch, updatedAt: Date.now() }).where(eq(workflowRuns.id, runId));
+/**
+ * Every run-status write is conditional on the status we expect it to be in, so a
+ * cancel (or a concurrent report) can't be undone by a write based on a stale read.
+ * Returns false when the run had already moved on — callers then stop.
+ */
+async function updateRun(
+  db: DB,
+  runId: string,
+  patch: Omit<Partial<RunRow>, "steps"> & { steps?: number | SQL },
+  onlyIf: RunRow["status"][],
+): Promise<boolean> {
+  const rows = await db
+    .update(workflowRuns)
+    .set({ ...(patch as Partial<RunRow>), updatedAt: Date.now() })
+    .where(and(eq(workflowRuns.id, runId), inArray(workflowRuns.status, onlyIf)))
+    .returning({ id: workflowRuns.id });
+  return rows.length > 0;
 }
 
 // ── start ──────────────────────────────────────────────────────────────────
@@ -141,7 +157,8 @@ async function enqueueNode(
   graph: WorkflowGraph,
   nodeId: string,
   kind: Exclude<StepKind, "gate">,
-  opts: { human?: string; attempt?: number; delayMs?: number } = {},
+  // countStep: a resume past an interruptBefore gate is the node's real execution, so it counts
+  opts: { human?: string; attempt?: number; delayMs?: number; countStep?: boolean } = {},
 ): Promise<void> {
   const { db } = deps;
   const node = nodeOf(graph, nodeId);
@@ -152,6 +169,7 @@ async function enqueueNode(
 
   const now = Date.now();
   if (node.interruptBefore && kind === "run") {
+    if (!(await updateRun(db, run.id, { status: "interrupted", currentNode: node.id }, ["running"]))) return;
     const seq = await nextSeq(db, run.id);
     await db.insert(workflowSteps).values({
       id: randomUUID(),
@@ -164,7 +182,6 @@ async function enqueueNode(
       status: "interrupted",
       createdAt: now,
     });
-    await updateRun(db, run.id, { status: "interrupted", currentNode: node.id });
     notifyInterrupted(deps, run, `⏸ 工作流停在「${node.id}」之前，等待人工放行：${runUrl(run.id)}`);
     return;
   }
@@ -176,6 +193,15 @@ async function enqueueNode(
     .where(and(eq(agents.id, node.agentId), eq(agents.ownerId, run.ownerId)))
     .limit(1);
   if (!target) return failRun(deps, run, `node ${node.id}: agent ${node.agentId} 不存在或沒有綁 queue`);
+
+  const counts = kind === "run" || opts.countStep === true;
+  const claimed = await updateRun(
+    db,
+    run.id,
+    { status: "running", currentNode: node.id, ...(counts ? { steps: sql`${workflowRuns.steps} + 1` } : {}) },
+    ["running"],
+  );
+  if (!claimed) return; // cancelled (or otherwise moved on) since we read it
 
   const state = JSON.parse(run.state) as RunState;
   const input = buildInput(node, state, opts.human);
@@ -196,8 +222,6 @@ async function enqueueNode(
     human: opts.human ?? null,
     createdAt: now,
   });
-  const steps = kind === "run" ? run.steps + 1 : run.steps;
-  await updateRun(db, run.id, { status: "running", currentNode: node.id, steps });
 
   await deps.getQueue(target.queueName).add(
     "agent-event",
@@ -223,15 +247,20 @@ async function enqueueNode(
 
 // ── step lifecycle (called from the event routes) ──────────────────────────
 
-/** Returns the agent the step was sent to, so callers can book agent_runs. */
-export async function onStepStarted(deps: EngineDeps, eventId: string): Promise<string | null> {
+/**
+ * reportingAgentId is set on the per-agent route: only the agent the step was sent to may
+ * report on it (a token for another agent — or another owner — can't steer the run).
+ * Returns false when the report is not accepted.
+ */
+export async function onStepStarted(deps: EngineDeps, eventId: string, reportingAgentId?: string): Promise<boolean> {
   const { db } = deps;
   const [step] = await db.select().from(workflowSteps).where(eq(workflowSteps.eventId, eventId)).limit(1);
-  if (!step) return null;
+  if (!step) return false;
+  if (reportingAgentId && step.agentId !== reportingAgentId) return false;
   if (step.status === "queued")
     await db.update(workflowSteps).set({ status: "running", startedAt: Date.now() }).where(eq(workflowSteps.id, step.id));
   if (step.agentId) await recordRunStart(db, step.agentId, eventId);
-  return step.agentId;
+  return true;
 }
 
 export async function onStepFinished(
@@ -239,13 +268,16 @@ export async function onStepFinished(
   eventId: string,
   reportedStatus: "done" | "failed",
   reported: ReportedResult = {},
-): Promise<void> {
+  reportingAgentId?: string,
+): Promise<boolean> {
   const { db } = deps;
   const [step] = await db.select().from(workflowSteps).where(eq(workflowSteps.eventId, eventId)).limit(1);
-  if (!step || step.status === "done" || step.status === "failed") return; // unknown or already handled
+  if (!step) return false;
+  if (reportingAgentId && step.agentId !== reportingAgentId) return false;
+  if (step.status !== "queued" && step.status !== "running") return true; // already handled: idempotent
 
   const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, step.runId)).limit(1);
-  if (!run) return;
+  if (!run) return false;
   const graph = await graphOf(db, run.versionId);
   const node = nodeOf(graph, step.node);
 
@@ -270,38 +302,43 @@ export async function onStepFinished(
     }
   }
 
-  await db
+  // Claim the step: only the first report for it gets past this (duplicate / retried PATCHes stop here).
+  const claimed = await db
     .update(workflowSteps)
     .set({ status: result.status, result: JSON.stringify(result), endedAt: Date.now() })
-    .where(eq(workflowSteps.id, step.id));
+    .where(and(eq(workflowSteps.id, step.id), inArray(workflowSteps.status, ["queued", "running"])))
+    .returning({ id: workflowSteps.id });
+  if (claimed.length === 0) return true;
   if (step.agentId) await recordRunEnd(db, step.agentId, eventId, result.status, result);
 
   // A cancelled / finished run still records the step, but goes no further.
-  if (run.status !== "running") return;
+  if (run.status !== "running") return true;
 
   if (result.unavailable && step.attempt <= MAX_RETRIES) {
-    return enqueueNode(deps, run, graph, step.node, "retry", {
+    await enqueueNode(deps, run, graph, step.node, "retry", {
       human: step.human ?? undefined,
       attempt: step.attempt + 1,
       delayMs: RETRY_DELAYS_MS[step.attempt - 1],
     });
+    return true;
   }
 
   const state = mergeState(JSON.parse(run.state) as RunState, result);
   const withState: RunRow = { ...run, state: JSON.stringify(state) };
-  await updateRun(db, run.id, { state: withState.state });
 
   if (result.blocked?.length) {
-    await updateRun(db, run.id, { status: "interrupted" });
+    if (!(await updateRun(db, run.id, { status: "interrupted", state: withState.state }, ["running"]))) return true;
     const actions = result.blocked.map((b) => `• ${b.tool}：${b.summary}`).join("\n");
     notifyInterrupted(deps, run, `⏸ 工作流在「${step.node}」碰到需要核准的動作，等待審查：${runUrl(run.id)}\n${actions}`);
-    return;
+    return true;
   }
+  if (!(await updateRun(db, run.id, { state: withState.state }, ["running"]))) return true;
 
   const next = selectNext(graph, step.node, result);
-  if (next === null) return failRun(deps, withState, result.error || `「${step.node}」失敗，且沒有接 status=failed 的邊`);
-  if (next === END) return completeRun(deps, withState, result);
-  return enqueueNode(deps, withState, graph, next, "run");
+  if (next === null) await failRun(deps, withState, result.error || `「${step.node}」失敗，且沒有接 status=failed 的邊`);
+  else if (next === END) await completeRun(deps, withState, result);
+  else await enqueueNode(deps, withState, graph, next, "run");
+  return true;
 }
 
 // ── human actions ──────────────────────────────────────────────────────────
@@ -315,8 +352,22 @@ export async function resumeRun(deps: EngineDeps, runId: string, ownerId: string
     .limit(1);
   if (!run) return "Run not found";
   if (run.status !== "interrupted" || !run.currentNode) return `Run is ${run.status}, not interrupted`;
+  // Claim the resume: a double-clicked button gets "not interrupted" the second time.
+  if (!(await updateRun(db, run.id, { status: "running" }, ["interrupted"]))) return "Run is no longer interrupted";
+  const [last] = await db
+    .select({ id: workflowSteps.id, kind: workflowSteps.kind })
+    .from(workflowSteps)
+    .where(eq(workflowSteps.runId, run.id))
+    .orderBy(desc(workflowSteps.seq))
+    .limit(1);
+  // A gate that's been let through is done.
+  if (last?.kind === "gate")
+    await db.update(workflowSteps).set({ status: "done", endedAt: Date.now() }).where(eq(workflowSteps.id, last.id));
   const graph = await graphOf(db, run.versionId);
-  await enqueueNode(deps, run, graph, run.currentNode, "resume", { human: message?.trim() || undefined });
+  await enqueueNode(deps, { ...run, status: "running" }, graph, run.currentNode, "resume", {
+    human: message?.trim() || undefined,
+    countStep: last?.kind === "gate",
+  });
   return null;
 }
 
@@ -328,14 +379,14 @@ export async function cancelRun(deps: EngineDeps, runId: string, ownerId: string
     .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.ownerId, ownerId)))
     .limit(1);
   if (!run) return "Run not found";
-  if (run.status === "done" || run.status === "failed" || run.status === "cancelled") return `Run is already ${run.status}`;
-  await updateRun(db, run.id, { status: "cancelled" });
-  // Best effort: drop a step that hasn't been picked up yet.
+  if (!(await updateRun(db, run.id, { status: "cancelled" }, ["running", "interrupted"]))) return `Run is already ${run.status}`;
+  // Steps nobody picked up yet (or gates still waiting) won't happen: mark them, and drop the queued job.
+  // A step already running finishes normally and is recorded, but the run goes no further.
   const [step] = await db
-    .select()
-    .from(workflowSteps)
-    .where(and(eq(workflowSteps.runId, run.id), eq(workflowSteps.status, "queued")))
-    .limit(1);
+    .update(workflowSteps)
+    .set({ status: "cancelled", endedAt: Date.now() })
+    .where(and(eq(workflowSteps.runId, run.id), inArray(workflowSteps.status, ["queued", "interrupted"])))
+    .returning();
   if (step?.agentId) {
     const [target] = await db
       .select({ queueName: queues.name })
@@ -372,12 +423,23 @@ async function reply(deps: EngineDeps, run: RunRow, result: { status: "success" 
   runReply(deps.db, eventId, result, deps.log);
 }
 
+/** Close the webhook log row of the event that started the run (workflow targets never report on it). */
+async function closeOriginEvent(deps: EngineDeps, run: RunRow, status: "done" | "failed"): Promise<void> {
+  if (!run.originEventId) return;
+  await deps.db
+    .update(webhookEvents)
+    .set({ status })
+    .where(and(eq(webhookEvents.id, run.originEventId), eq(webhookEvents.ownerId, run.ownerId)));
+}
+
 async function completeRun(deps: EngineDeps, run: RunRow, last: StepResult): Promise<void> {
-  await updateRun(deps.db, run.id, { status: "done", currentNode: null, state: run.state });
+  if (!(await updateRun(deps.db, run.id, { status: "done", currentNode: null, state: run.state }, ["running"]))) return;
+  await closeOriginEvent(deps, run, "done");
   await reply(deps, run, { status: "success", summary: last.summary, mrUrl: last.mrUrl });
 }
 
 async function failRun(deps: EngineDeps, run: RunRow, error: string): Promise<void> {
-  await updateRun(deps.db, run.id, { status: "failed", error, state: run.state });
+  if (!(await updateRun(deps.db, run.id, { status: "failed", error, state: run.state }, ["running"]))) return;
+  await closeOriginEvent(deps, run, "failed");
   await reply(deps, run, { status: "failed", error });
 }

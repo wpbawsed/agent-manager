@@ -47,7 +47,8 @@ export async function agentOverview(app: FastifyInstance, ownerId: string, onlyA
     .from(workflowSteps)
     .innerJoin(workflowRuns, eq(workflowRuns.id, workflowSteps.runId))
     .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
-    .where(and(inArray(workflowSteps.agentId, ids), eq(workflowSteps.status, "running")))
+    // only live runs: a step left "running" by a cancelled run or a crashed agent isn't current work
+    .where(and(inArray(workflowSteps.agentId, ids), eq(workflowSteps.status, "running"), eq(workflowRuns.status, "running")))
     .orderBy(desc(workflowSteps.startedAt));
   const currentBy = new Map<string, (typeof current)[number]>();
   for (const c of current) if (c.agentId && !currentBy.has(c.agentId)) currentBy.set(c.agentId, c);

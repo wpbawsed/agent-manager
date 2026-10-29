@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { routingRules, workflows } from "../db/schema.js";
+import { brokers, queues, routingRules, workflows } from "../db/schema.js";
 import type { DB } from "../db/client.js";
 import type { ReplyPolicy } from "../lib/reply-policy.js";
 
@@ -31,9 +31,17 @@ export interface CreateRoutingRuleInput {
 
 export class RoutingTargetError extends Error {}
 
-/** A rule targets exactly one of: a queue (single agent) or a workflow. */
+/** A rule targets exactly one of: a queue (single agent) or a workflow — and it must be the caller's own. */
 async function checkTarget(db: DB, ownerId: string, queueId?: string | null, workflowId?: string | null) {
   if (Boolean(queueId) === Boolean(workflowId)) throw new RoutingTargetError("Set exactly one of queueId or workflowId");
+  if (queueId) {
+    const [q] = await db
+      .select({ id: queues.id })
+      .from(queues)
+      .where(and(eq(queues.id, queueId), eq(queues.ownerId, ownerId)))
+      .limit(1);
+    if (!q) throw new RoutingTargetError("Queue not found");
+  }
   if (workflowId) {
     const [wf] = await db
       .select({ id: workflows.id })
@@ -45,6 +53,12 @@ async function checkTarget(db: DB, ownerId: string, queueId?: string | null, wor
 }
 
 export async function createRoutingRule(db: DB, input: CreateRoutingRuleInput) {
+  const [broker] = await db
+    .select({ id: brokers.id })
+    .from(brokers)
+    .where(and(eq(brokers.id, input.brokerId), eq(brokers.ownerId, input.ownerId)))
+    .limit(1);
+  if (!broker) throw new RoutingTargetError("Broker not found");
   await checkTarget(db, input.ownerId, input.queueId, input.workflowId);
   const id = randomUUID();
   const now = Date.now();
