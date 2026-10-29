@@ -473,6 +473,16 @@ Phase 1 和 Phase 2 互不依賴，可以同時進行；Phase 3 需要兩者都�
 
 ---
 
+## 8.1 Phase 4a 實作時的修正（2026-10-30）
+
+| 原本寫的 | 實際 | 理由 |
+|---|---|---|
+| §4.3 state 的 `input` 是原始 payload | 保留 `raw` | GitHub／Jira 的需求本文只在 `raw` 裡，要用 `{{input.raw.comment.body}}` 這類路徑取 |
+| §3.4 Routing Rule「多一個欄位選目標」 | `routing_rules.queue_id` 放寬為可空，新增 `workflow_id`，兩者恰好一個有值 | 目標二選一。唯一放寬既有欄位的地方，不動資料 |
+| §6「新增 per-agent 事件路由」才寫得進 `agent_runs` | 舊的 `/internal/events` 回報 `wf_` 步驟時，引擎用 step 記的 agentId 補寫 `agent_runs` | 試點的 template 還走舊路由（Q29），工作流的統計不用等 Phase 5 |
+| §4.5 通知連結用 `MANAGER_PUBLIC_URL` | 新增 `UI_PUBLIC_URL` | UI 可能是獨立的 service，連結要指到 UI 的 `/workflow-runs/:id`（Phase 4b 做這頁） |
+| §6 的 webhook 紀錄重複 | `webhook_events` 對入 queue 的事件改用 eventId 當 id，agent 回報先到時以 upsert 補上 owner | 試點抓到：一個事件兩筆、使用者只看到永遠 `queued` 那筆 |
+
 ## 9. 取代或修正的舊決策
 
 | 舊決策 | 在哪 | 現在 |

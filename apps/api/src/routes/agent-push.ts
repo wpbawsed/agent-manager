@@ -2,6 +2,10 @@ import type { FastifyPluginAsync } from "fastify";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, agentLogs, agentMetrics } from "../db/schema.js";
+import { reportEventEnd, reportEventStart } from "../lib/event-report.js";
+import { engineDeps } from "../workflow/deps.js";
+import type { ReportedResult } from "../workflow/engine.js";
+import { agentWork } from "../services/agent-stats.js";
 
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
 
@@ -39,6 +43,8 @@ function rateLimited(agentId: string): boolean {
 //   POST /internal/agents/:id/heartbeat   ← alive + uptime
 //   POST /internal/agents/:id/metrics     ← cpu / mem / counters
 //   POST /internal/agents/:id/logs        ← batch of log lines
+//   POST /internal/agents/:id/events      ← picked up a job (books agent_runs)
+//   PATCH /internal/agents/:id/events/:eventId ← finished a job (reply policy / workflow engine)
 const agentPushRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -66,7 +72,7 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
   // POST /internal/agents/:id/heartbeat
   app.post<{
     Params: { id: string };
-    Body: { status?: string; uptimeSeconds?: number };
+    Body: { status?: string; uptimeSeconds?: number; brainCommit?: string; brainPullError?: string | null };
   }>(
     "/:id/heartbeat",
     {
@@ -76,16 +82,28 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
           properties: {
             status: { type: "string", enum: ["running", "idle", "error"] },
             uptimeSeconds: { type: "number" },
+            brainCommit: { type: "string", maxLength: 64 },
+            brainPullError: { type: ["string", "null"], maxLength: 2000 },
           },
         },
       },
     },
     async (req) => {
       const { id } = req.params;
-      const status = req.body?.status === "error" ? "error" : "running";
+      const b = req.body ?? {};
+      // running = a Run in progress, idle = waiting for work, error = can't take work (e.g. usage limit).
+      // Older agents send no status: treat as running, as before.
+      const status = b.status === "error" || b.status === "idle" ? b.status : "running";
       await app.db
         .update(agents)
-        .set({ status, lastHeartbeatAt: Date.now(), updatedAt: Date.now() })
+        .set({
+          status,
+          lastHeartbeatAt: Date.now(),
+          updatedAt: Date.now(),
+          // Only agents that know about brains send these; don't wipe them for the rest.
+          ...(b.brainCommit !== undefined ? { brainCommit: b.brainCommit } : {}),
+          ...(b.brainPullError !== undefined ? { brainPullError: b.brainPullError || null } : {}),
+        })
         .where(eq(agents.id, id));
       return { ok: true };
     },
@@ -193,6 +211,63 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
         .set({ lastHeartbeatAt: Date.now() })
         .where(eq(agents.id, id));
       return reply.code(201).send({ ok: true, count: rows.length });
+    },
+  );
+
+  // GET /internal/agents/:id/work — queue depth, recent runs, runs waiting on a human here
+  app.get<{ Params: { id: string } }>("/:id/work", async (req) => {
+    const ownerId = (req as { agentOwnerId?: string }).agentOwnerId!;
+    return agentWork(app, req.params.id, ownerId);
+  });
+
+  // POST /internal/agents/:id/events — this agent picked up a job.
+  // Same as POST /internal/events, but the agent is known from its token, so agent_runs gets booked.
+  app.post<{
+    Params: { id: string };
+    Body: { eventId: string; brokerId: string; sourceType?: string; eventType?: string };
+  }>(
+    "/:id/events",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["eventId", "brokerId"],
+          properties: {
+            eventId: { type: "string", minLength: 1 },
+            brokerId: { type: "string" },
+            sourceType: { type: "string" },
+            eventType: { type: "string" },
+          },
+        },
+      },
+    },
+    async (req) => {
+      await reportEventStart(engineDeps(app, req.log), { ...req.body, agentId: req.params.id });
+      return { ok: true };
+    },
+  );
+
+  // PATCH /internal/agents/:id/events/:eventId — this agent finished (or failed) a job.
+  app.patch<{
+    Params: { id: string; eventId: string };
+    Body: { status: "processing" | "done" | "failed"; result?: ReportedResult };
+  }>(
+    "/:id/events/:eventId",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["status"],
+          properties: {
+            status: { type: "string", enum: ["processing", "done", "failed"] },
+            result: { type: "object", additionalProperties: true },
+          },
+        },
+      },
+    },
+    async (req) => {
+      await reportEventEnd(engineDeps(app, req.log), req.params.eventId, req.body.status, req.body.result, req.params.id);
+      return { ok: true };
     },
   );
 };

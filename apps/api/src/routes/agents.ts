@@ -7,6 +7,7 @@ import {
   deleteAgent,
   getAgentIntegration,
 } from "../services/agents.js";
+import { agentOverview } from "../services/agent-stats.js";
 
 export default async function agentsRoutes(app: FastifyInstance) {
   // POST /api/agents — Create agent
@@ -57,6 +58,12 @@ export default async function agentsRoutes(app: FastifyInstance) {
   app.get("/", { preHandler: [app.authenticate] }, async (req) => {
     const user = req.user as { sub: string };
     return listAgents(app.db, user.sub);
+  });
+
+  // GET /api/agents/overview — monitoring view: liveness, brain, queue depth, 24h stats, current step
+  app.get("/overview", { preHandler: [app.authenticate] }, async (req) => {
+    const user = req.user as { sub: string };
+    return agentOverview(app, user.sub);
   });
 
   // GET /api/agents/:id — Get single agent

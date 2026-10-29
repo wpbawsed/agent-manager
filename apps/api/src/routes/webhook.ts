@@ -4,6 +4,8 @@ import { eq, and } from "drizzle-orm";
 import { brokers, routingRules, queues, users, webhookEvents, replyContexts } from "../db/schema.js";
 import { normalizers } from "../normalizers/index.js";
 import { runAck, resolveIssueKey, type ReplyPolicy } from "../lib/reply-policy.js";
+import { startRun } from "../workflow/engine.js";
+import { engineDeps } from "../workflow/deps.js";
 
 const SUPPORTED_TYPES = ["slack", "jira", "github", "line", "railway", "notion"] as const;
 type SourceType = typeof SUPPORTED_TYPES[number];
@@ -75,6 +77,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
 
       // Helper: fire-and-forget webhook event log insert (never throws)
       const logWebhookEvent = (fields: {
+        id?: string; // routed events use their eventId, so agent reports update this same row
         brokerId: string;
         ownerId: string;
         sourceType: string;
@@ -90,7 +93,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
         app.db
           .insert(webhookEvents)
           .values({
-            id: randomUUID(),
+            id: fields.id ?? randomUUID(),
             brokerId: fields.brokerId,
             ownerId: fields.ownerId,
             sourceType: fields.sourceType,
@@ -100,6 +103,12 @@ export default async function webhookRoutes(app: FastifyInstance) {
             errorMessage: fields.errorMessage ?? null,
             payloadSummary: summary ?? null,
             createdAt: now,
+          })
+          // An agent's POST /internal/events can land before this insert and create the
+          // row first (owner unknown); fill in what only the webhook knows, keep its status.
+          .onConflictDoUpdate({
+            target: webhookEvents.id,
+            set: { ownerId: fields.ownerId, routed: fields.routed ?? 0, payloadSummary: summary ?? null },
           })
           .catch((err: unknown) => req.log.error({ err }, "Failed to write webhook_event log"));
       };
@@ -178,13 +187,14 @@ export default async function webhookRoutes(app: FastifyInstance) {
           id: routingRules.id,
           queueId: routingRules.queueId,
           queueName: queues.name,
+          workflowId: routingRules.workflowId,
           eventTypes: routingRules.eventTypes,
           conditions: routingRules.conditions,
           replyTarget: routingRules.replyTarget,
           replyPolicy: routingRules.replyPolicy,
         })
         .from(routingRules)
-        .innerJoin(queues, eq(routingRules.queueId, queues.id))
+        .leftJoin(queues, eq(routingRules.queueId, queues.id))
         .where(eq(routingRules.brokerId, broker.id));
 
       if (rules.length === 0) {
@@ -249,6 +259,37 @@ export default async function webhookRoutes(app: FastifyInstance) {
           }
         }
 
+        const ruleReplyTo =
+          rule.replyTarget ??
+          ((agentEvent as Record<string, unknown>).replyTo as string | undefined) ??
+          null;
+
+        // Workflow target: start a Run; the engine enqueues the entry node and
+        // replies only when the Run reaches END (system-integration-design.md §4.8).
+        if (rule.workflowId) {
+          try {
+            await startRun(
+              engineDeps(app, req.log),
+              {
+                ownerId: user.id,
+                workflowId: rule.workflowId,
+                ruleId: rule.id,
+                event: agentEvent,
+                replyTo: ruleReplyTo,
+                replyPolicy: rule.replyPolicy,
+              },
+            );
+            routed++;
+            if (rule.replyPolicy) {
+              runAck(app.db, { brokerId: broker.id, replyTo: ruleReplyTo, policy: JSON.parse(rule.replyPolicy) as ReplyPolicy }, req.log);
+            }
+          } catch (err) {
+            req.log.error({ err, ruleId: rule.id, workflowId: rule.workflowId }, "Failed to start workflow run");
+            errors.push(rule.workflowId);
+          }
+          continue;
+        }
+
         if (!rule.queueName) {
           req.log.warn({ ruleId: rule.id, queueId: rule.queueId }, "Queue has no name, skipping");
           continue;
@@ -256,10 +297,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
 
         try {
           const queue = app.getQueue(rule.queueName);
-          const replyTo =
-            rule.replyTarget ??
-            ((agentEvent as Record<string, unknown>).replyTo as string | undefined) ??
-            null;
+          const replyTo = ruleReplyTo;
           const jobData = replyTo ? { ...agentEvent, replyTo } : agentEvent;
           await queue.add("agent-event", jobData, {
             jobId: eventId, // 冪等：webhook 重送 → 同一 eventId 不會重跑
@@ -283,7 +321,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
           );
         } catch (err) {
           req.log.error({ err, queueId: rule.queueId }, "Failed to enqueue event");
-          errors.push(rule.queueId);
+          errors.push(rule.queueId ?? rule.id);
         }
       }
 
@@ -314,6 +352,7 @@ export default async function webhookRoutes(app: FastifyInstance) {
       // Only write to DB if at least one agent was matched and enqueued
       if (routed > 0 || errors.length > 0) {
         logWebhookEvent({
+          id: eventId,
           brokerId: broker.id,
           ownerId: user.id,
           sourceType,

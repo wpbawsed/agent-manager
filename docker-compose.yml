@@ -37,6 +37,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - INTERNAL_TOKEN=${INTERNAL_TOKEN}
       - MANAGER_PUBLIC_URL=${MANAGER_PUBLIC_URL:-http://localhost:8080}
+      - UI_PUBLIC_URL=${UI_PUBLIC_URL:-http://localhost:3000}
       - CORS_ORIGIN=http://localhost:3000
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -64,6 +64,12 @@ async function start() {
   await app.register((await import("./routes/admin.js")).default, {
     prefix: "/api/admin",
   });
+  await app.register((await import("./routes/workflows.js")).workflowRoutes, {
+    prefix: "/api/workflows",
+  });
+  await app.register((await import("./routes/workflows.js")).workflowRunRoutes, {
+    prefix: "/api/workflow-runs",
+  });
   await app.register((await import("./routes/internal.js")).default, {
     prefix: "/internal",
   });
