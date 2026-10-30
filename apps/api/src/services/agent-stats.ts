@@ -92,5 +92,25 @@ export async function agentWork(app: FastifyInstance, agentId: string, ownerId: 
     .groupBy(workflowRuns.id, workflows.name)
     .orderBy(desc(workflowRuns.updatedAt));
 
-  return { queueDepth: overview?.queueDepth ?? null, last24h: overview?.last24h ?? null, recent, needsHuman: interrupted };
+  // What stopped it: a gate (let through from agent-manager) or blocked actions (finished here,
+  // attended — §4.5). The latest step carries both the kind and the blocked list.
+  const needsHuman = await Promise.all(
+    interrupted.map(async (r) => {
+      const [last] = await app.db
+        .select({ kind: workflowSteps.kind, input: workflowSteps.input, result: workflowSteps.result })
+        .from(workflowSteps)
+        .where(eq(workflowSteps.runId, r.runId))
+        .orderBy(desc(workflowSteps.seq))
+        .limit(1);
+      const result = last?.result ? (JSON.parse(last.result) as { blocked?: Array<{ tool: string; summary: string }> }) : null;
+      return {
+        ...r,
+        reason: last?.kind === "gate" ? ("gate" as const) : ("blocked" as const),
+        blocked: result?.blocked ?? [],
+        input: last?.input ?? null,
+      };
+    }),
+  );
+
+  return { queueDepth: overview?.queueDepth ?? null, last24h: overview?.last24h ?? null, recent, needsHuman };
 }

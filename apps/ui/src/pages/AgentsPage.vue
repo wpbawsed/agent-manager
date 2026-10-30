@@ -53,6 +53,7 @@
             <td>
               <div style="font-weight:500;">{{ a.name }}</div>
               <div class="agent-id">{{ a.id }}</div>
+              <a v-if="a.endpoint && isHttpUrl(a.endpoint)" :href="a.endpoint" target="_blank" rel="noopener noreferrer" class="sub">UI ↗</a>
             </td>
             <td>
               <span class="type-tag" :class="a.type">{{ a.type === 'cloud' ? '☁ cloud' : '⌂ local' }}</span>
@@ -90,6 +91,7 @@
               <div class="action-group">
                 <!-- every agent runs its own runtime; the manager only hands out the setup material -->
                 <button class="btn btn-ghost btn-sm" @click="openIntegration(a.id)">⚙ Setup</button>
+                <button class="btn btn-ghost btn-sm" @click="editEndpoint(a)">UI 網址</button>
                 <button class="btn btn-danger btn-sm" @click="deleteAgent(a.id)">Delete</button>
               </div>
             </td>
@@ -133,10 +135,10 @@
             <input v-model="form.name" class="form-input" placeholder="jira-claude-cli-agent" />
           </div>
 
-          <div v-if="form.type === 'local'" class="form-group">
-            <label class="form-label">Endpoint (optional)</label>
-            <input v-model="form.endpoint" class="form-input" placeholder="https://my-mac.tunnel.example.com:9090" />
-            <div class="form-hint">本地 Agent 的對外 URL（僅供記錄，Manager 不會主動連線）</div>
+          <div class="form-group">
+            <label class="form-label">Agent UI 網址（選填）</label>
+            <input v-model="form.endpoint" class="form-input" placeholder="https://dev-agent.up.railway.app" />
+            <div class="form-hint">template 容器的網頁 UI。工作流被擋下時，Run 頁的「到 agent 核准」會連到這裡（Manager 不會主動連線）</div>
           </div>
 
           <div class="form-group">
@@ -273,6 +275,20 @@ const errorCount   = computed(() => agents.agents.filter((a) => a.status === 'er
 function queueName(queueId?: string) {
   if (!queueId) return ''
   return queues.queues.find((q) => q.id === queueId)?.name ?? queueId.slice(0, 8)
+}
+
+const isHttpUrl = (u: string) => /^https?:\/\//i.test(u)
+
+async function editEndpoint(a: Agent) {
+  const value = prompt('Agent UI 網址（template 容器的網頁 UI；留空＝清除）', a.endpoint ?? '')
+  if (value === null) return
+  const endpoint = value.trim()
+  if (endpoint && !isHttpUrl(endpoint)) return alert('要是 http:// 或 https:// 開頭的網址')
+  try {
+    await agents.update(a.id, { endpoint })
+  } catch {
+    alert('更新失敗')
+  }
 }
 
 async function deleteAgent(id: string) {

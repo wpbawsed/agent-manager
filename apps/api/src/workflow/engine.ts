@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Queue } from "bullmq";
 import type { DB } from "../db/client.js";
 import {
+  agentRuns,
   agents,
   queues,
   replyContexts,
@@ -368,6 +369,86 @@ export async function resumeRun(deps: EngineDeps, runId: string, ownerId: string
     human: message?.trim() || undefined,
     countStep: last?.kind === "gate",
   });
+  return null;
+}
+
+/**
+ * §4.5 approval path: blocked actions can't be approved through the queue, so the agent that
+ * owns the node continues it in its own UI with a human present. Before that run starts the agent
+ * claims the node: the run goes back to `running` (so "繼續" in agent-manager can't start a second,
+ * unattended copy) and a `kind=resume` step is created. The agent reports on that step's eventId
+ * through the normal event routes, so the step is tied to this node and only the first report counts.
+ * Returns the step's eventId, or an error message.
+ */
+export async function claimAttended(
+  deps: EngineDeps,
+  runId: string,
+  agentId: string,
+  node: string,
+): Promise<{ eventId: string } | { error: string; notFound?: boolean }> {
+  const { db } = deps;
+  const [agent] = await db.select({ ownerId: agents.ownerId }).from(agents).where(eq(agents.id, agentId)).limit(1);
+  if (!agent) return { error: "Agent not found", notFound: true };
+  const [run] = await db
+    .select()
+    .from(workflowRuns)
+    .where(and(eq(workflowRuns.id, runId), eq(workflowRuns.ownerId, agent.ownerId)))
+    .limit(1);
+  if (!run) return { error: "Run not found", notFound: true };
+  if (run.status !== "interrupted" || !run.currentNode) return { error: `Run is ${run.status}, not interrupted` };
+  if (run.currentNode !== node) return { error: `Run is waiting at "${run.currentNode}", not "${node}"` };
+  const graph = await graphOf(db, run.versionId);
+  if (nodeOf(graph, node)?.agentId !== agentId) return { error: "Run is not waiting on this agent" };
+  const [last] = await db
+    .select({ kind: workflowSteps.kind, input: workflowSteps.input })
+    .from(workflowSteps)
+    .where(eq(workflowSteps.runId, run.id))
+    .orderBy(desc(workflowSteps.seq))
+    .limit(1);
+  // A gate hasn't run the node yet: it's let through from agent-manager, not continued in the agent.
+  if (last?.kind === "gate") return { error: "Run is waiting at a gate; let it through from agent-manager" };
+  if (!(await updateRun(db, run.id, { status: "running" }, ["interrupted"]))) return { error: "Run is no longer interrupted" };
+
+  const seq = await nextSeq(db, run.id);
+  const eventId = `wf_${run.id}_${seq}`;
+  const now = Date.now();
+  await db.insert(workflowSteps).values({
+    id: randomUUID(),
+    runId: run.id,
+    seq,
+    node,
+    agentId,
+    eventId,
+    kind: "resume",
+    status: "running",
+    input: last?.input ?? null, // so a second interruption still shows what the node was asked
+    human: "（在 agent UI 有人值守接續）",
+    createdAt: now,
+    startedAt: now,
+  });
+  await recordRunStart(db, agentId, eventId);
+  return { eventId };
+}
+
+/** The attended run was abandoned before it finished (tab closed): drop the claim, the run waits again. */
+export async function releaseAttended(deps: EngineDeps, eventId: string, agentId: string): Promise<string | null> {
+  const { db } = deps;
+  const [step] = await db
+    .update(workflowSteps)
+    .set({ status: "cancelled", endedAt: Date.now() })
+    .where(
+      and(
+        eq(workflowSteps.eventId, eventId),
+        eq(workflowSteps.agentId, agentId),
+        eq(workflowSteps.kind, "resume"),
+        eq(workflowSteps.status, "running"),
+      ),
+    )
+    .returning();
+  if (!step) return "Step not found or already finished";
+  await db.delete(agentRuns).where(and(eq(agentRuns.agentId, agentId), eq(agentRuns.eventId, eventId)));
+  // Only if nothing else moved the run on (a cancel stays cancelled).
+  await updateRun(db, step.runId, { status: "interrupted", currentNode: step.node }, ["running"]);
   return null;
 }
 

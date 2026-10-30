@@ -26,9 +26,13 @@
           <ul class="blocked">
             <li v-for="(b, i) in blocked" :key="i"><span class="mono">{{ b.tool }}</span>：{{ b.summary }}</li>
           </ul>
+          <div style="margin:4px 0 8px;">
+            <a v-if="attendedUrl" :href="attendedUrl" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">到 agent 核准 ↗</a>
+            <span v-else class="form-hint">這個 agent 沒有填 UI 網址（Agents 頁的 endpoint），請自己打開它的 UI 接續。</span>
+          </div>
           <div class="form-hint">
-            真的要核准這些動作，請到該 agent 的 UI 以有人值守模式接續（Phase 5 會從這裡直接連過去）。
-            或把放行規則加進腦袋 repo 的 <code>.claude/settings.json</code>。下面的「繼續」只會帶著你的回覆重跑這個節點。
+            在 agent 的 UI 以有人值守模式接續這個 Session，被擋的動作會停下來等你按核准，跑完自動回報、工作流繼續往下走。
+            不想每次核准，就把放行規則加進腦袋 repo 的 <code>.claude/settings.json</code>。下面的「繼續」只會帶著你的回覆無人值守重跑這個節點（還是會被擋）。
           </div>
         </template>
         <textarea v-model="message" class="form-textarea" rows="3" placeholder="給 agent 的回覆（選填）" />
@@ -120,6 +124,21 @@ const totalCost = computed(() => run.value?.steps.reduce((sum, s) => sum + (s.re
 const lastStep = computed(() => run.value?.steps.at(-1))
 const waitingGate = computed(() => run.value?.status === 'interrupted' && lastStep.value?.kind === 'gate')
 const blocked = computed(() => (run.value?.status === 'interrupted' ? lastStep.value?.result?.blocked ?? [] : []))
+/** Link to the agent's own UI, which continues the node attended (§4.5); only real http(s) endpoints. */
+const attendedUrl = computed(() => {
+  const r = run.value
+  const agentId = r?.graph?.nodes.find((n) => n.id === r.currentNode)?.agentId
+  const endpoint = agents.agents.find((a) => a.id === agentId)?.endpoint
+  if (!r?.currentNode || !endpoint || !isHttpUrl(endpoint)) return ''
+  try {
+    const url = new URL(endpoint)
+    url.searchParams.set('wfRun', r.id)
+    url.searchParams.set('node', r.currentNode)
+    return url.toString()
+  } catch {
+    return '' // passes the regex but isn't a URL ("http://", spaces…)
+  }
+})
 
 /** Latest step per node → colour on the graph. */
 const nodeStates = computed(() => {
