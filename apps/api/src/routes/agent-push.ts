@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { agents, agentLogs, agentMetrics } from "../db/schema.js";
 import { reportEventEnd, reportEventStart } from "../lib/event-report.js";
 import { engineDeps } from "../workflow/deps.js";
-import type { ReportedResult } from "../workflow/engine.js";
+import { claimAttended, releaseAttended, type ReportedResult } from "../workflow/engine.js";
 import { agentWork } from "../services/agent-stats.js";
 
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || "";
@@ -67,6 +67,7 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(429).send({ error: "Rate limit exceeded" });
     }
     (req as { agentOwnerId?: string }).agentOwnerId = agent.ownerId;
+    (req as { viaInternalToken?: boolean }).viaInternalToken = token !== agent.apiToken;
   });
 
   // POST /internal/agents/:id/heartbeat
@@ -272,6 +273,28 @@ const agentPushRoutes: FastifyPluginAsync = async (app) => {
       return { ok: true };
     },
   );
+
+  // §4.5 approval path: the agent's own UI continues a blocked node with a human present.
+  // claim → run back to running + a kind=resume step; the result then comes in on that step's
+  // eventId via PATCH /:id/events/:eventId. release → the attended run was abandoned.
+  // Only the agent's own token: this says "a person approved this", which the shared token can't.
+  app.post<{ Params: { id: string; runId: string }; Body: { node: string } }>(
+    "/:id/workflow-runs/:runId/claim",
+    { schema: { body: { type: "object", required: ["node"], properties: { node: { type: "string", minLength: 1 } } } } },
+    async (req, reply) => {
+      if ((req as { viaInternalToken?: boolean }).viaInternalToken) return reply.code(403).send({ error: "Use the agent's own token" });
+      const r = await claimAttended(engineDeps(app, req.log), req.params.runId, req.params.id, req.body.node);
+      if ("error" in r) return reply.code(r.notFound ? 404 : 409).send({ error: r.error });
+      return r;
+    },
+  );
+
+  app.post<{ Params: { id: string; eventId: string } }>("/:id/events/:eventId/release", async (req, reply) => {
+    if ((req as { viaInternalToken?: boolean }).viaInternalToken) return reply.code(403).send({ error: "Use the agent's own token" });
+    const err = await releaseAttended(engineDeps(app, req.log), req.params.eventId, req.params.id);
+    if (err) return reply.code(409).send({ error: err });
+    return { ok: true };
+  });
 };
 
 export default agentPushRoutes;

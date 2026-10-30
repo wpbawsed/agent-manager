@@ -127,7 +127,7 @@ export async function updateAgent(
     }
     updates.queueId = input.queueId || null;
   }
-  if (input.endpoint !== undefined) updates.endpoint = input.endpoint;
+  if (input.endpoint !== undefined) updates.endpoint = input.endpoint || null;
 
   const [updated] = await db.update(agents).set(updates).where(eq(agents.id, id)).returning();
   return withOnline(updated);

@@ -234,7 +234,7 @@ state = {
 
 - **回一段話**：在 agent-manager（或 template UI 轉送）寫回覆 → 把同一個節點重新丟進 queue，`{{human}}` 填入回覆。job 帶 `conversationKey = "wf:{runId}:{node}"`，template 用它接回同一個 Session（§5.6）。
 - **核准被擋的動作**：**不能透過 queue 送權限**。job 是任何能寫 Routing Rule 的人都能影響的資料，讓它帶「這次放行 X」就等於把權限邊界交給呼叫方（同 executor 文件 §10.3 #4 的理由）。所以核准只有兩條路：
-  1. agent-manager 的「核准」按鈕連到該 agent 的 template UI，**在那裡以有人值守模式接續那個 Session**，L4 動作停在待核准等人按；結束時 template 把結果回報給**同一個 step**
+  1. agent-manager 的「到 agent 核准」連到該 agent 的 template UI（agent 登記的 `endpoint`，帶 `?wfRun={runId}&node={node}`），**在那裡以有人值守模式接續那個 Session**（對話鍵 `wf:{runId}:{node}`），L4 動作停在待核准等人按。開跑前 template 用自己的 token 先**認領**（`POST /internal/agents/:id/workflow-runs/:runId/claim {node}`）：只在「Run 停在中斷、目前節點就是 `node` 且派給這個 agent、不是關卡」時答應，Run 改回 `running`（這邊的「繼續」就不會再派一份無人值守的），並建一筆 `kind=resume` 的 step、回傳它的 eventId。跑完照一般 step 回報（`PATCH …/events/:eventId`，只收第一次），引擎照邊往下走；沒跑完就 `POST …/events/:eventId/release` 退還，Run 回到 `interrupted`。這兩條只收 agent 自己的 token
   2. 把 allow 規則寫進腦袋 repo 的 `.claude/settings.json`（git，有 review），下一次就不會再被擋
 - **手動關卡**：走到 `interruptBefore` 的節點時寫一筆 `kind=gate` 的 step 就停下來；按「繼續」寫一筆 `kind=resume` 的 step 並丟 job。引擎判斷「這次是不是人放行的」就看：要 enqueue 的是不是 `resume`。
 
@@ -299,7 +299,8 @@ POST /api/workflow-runs/:id/resume { message? } → enqueue(停下來的那個 n
 | `GET /api/workflow-runs?status=…`、`GET /api/workflow-runs/:id` | Run 列表與明細（每一步的輸入、結果、成本） |
 | `POST /api/workflow-runs/:id/resume { message? }` | 中斷後接續（§4.5） |
 | `POST /api/workflow-runs/:id/cancel` | 取消 |
-| `GET /internal/agents/:id/work` | 給 template UI 用，見 §5.5 |
+| `GET /internal/agents/:id/work` | 給 template UI 用，見 §5.5；等人的 Run 帶 `reason`（`gate`／`blocked`）、`blocked[]`、節點輸入 |
+| `POST /internal/agents/:id/workflow-runs/:runId/claim` ／ `POST /internal/agents/:id/events/:eventId/release` | template 有人值守接續被擋的節點：認領／放棄（§4.5） |
 | `POST /internal/agents/:id/events`、`PATCH /internal/agents/:id/events/:eventId` | agent 回報開始／結束，per-agent token，見 §6 |
 
 **工作流頁**（取代現在的 Routing 頁；畫布要新引入 `@vue-flow/core`，目前 UI 只有 Vue、Pinia、Vue Router、axios）：
@@ -481,6 +482,7 @@ Phase 1 和 Phase 2 互不依賴，可以同時進行；Phase 3 需要兩者都�
 | §3.4 Routing Rule「多一個欄位選目標」 | `routing_rules.queue_id` 放寬為可空，新增 `workflow_id`，兩者恰好一個有值 | 目標二選一。唯一放寬既有欄位的地方，不動資料 |
 | §6「新增 per-agent 事件路由」才寫得進 `agent_runs` | 舊的 `/internal/events` 回報 `wf_` 步驟時，引擎用 step 記的 agentId 補寫 `agent_runs` | 試點的 template 還走舊路由（Q29），工作流的統計不用等 Phase 5 |
 | §4.5 通知連結用 `MANAGER_PUBLIC_URL` | 新增 `UI_PUBLIC_URL` | UI 可能是獨立的 service，連結要指到 UI 的 `/workflow-runs/:id`（Phase 4b 做這頁） |
+| §4.5 有人值守跑完「回報給同一個 step」 | 開跑前先認領，認領時另建一筆 `kind=resume` 的 step，結果回報到那一步（Phase 5） | 被擋的那一步早已回報結束（`done` ＋ `blocked`），Phase 4a 為了擋重複回報，每一步只收第一次結束回報；先認領才不會跟這邊的「繼續」各跑一份，結果也綁在那個節點上 |
 | §6 的 webhook 紀錄重複 | `webhook_events` 對入 queue 的事件改用 eventId 當 id，agent 回報先到時以 upsert 補上 owner | 試點抓到：一個事件兩筆、使用者只看到永遠 `queued` 那筆 |
 
 ## 9. 取代或修正的舊決策
